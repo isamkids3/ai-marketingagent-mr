@@ -1,0 +1,29 @@
+# Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+ENV/
+
+# Configuration
+.env
+*.env
+
+# Local database/docker database storage
+pgdata/
+sqlite.db
+
+# Logs
+*.log
+
+# Generated output files
+gen-content/
+marketing_workspace_*/
+*.pdf
+*.png
+*.jpg
+*.jpeg
