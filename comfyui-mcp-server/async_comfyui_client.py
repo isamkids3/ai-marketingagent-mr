@@ -87,6 +87,7 @@ class AsyncComfyUIClient:
                     raise Exception(f"Execution Error in node {msg_data.get('node_id')}: {msg_data.get('exception_type')}")
                     
     async def _queue_workflow(self, workflow: Dict[str, Any], client_id: str) -> str:
+        logger.info(f"Dispatching workflow payload to ComfyUI server:\n{json.dumps(workflow, indent=2)}")
         async with aiohttp.ClientSession() as session:
             payload = {"prompt": workflow, "client_id": client_id}
             async with session.post(f"{self.base_url}/prompt", json=payload) as resp:

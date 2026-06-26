@@ -350,6 +350,76 @@ def test_resolve_local_path():
     assert path_plain == "/etc/hosts"
 
 
+def test_composition_validators():
+    from app.agent.orchestrator import CompositionElement, CompositionalDeconstruction
+    import pytest
+    from pydantic import ValidationError
+
+    # Valid text element
+    elem_text_ok = CompositionElement(type="text", bbox=[100, 200, 220, 800], desc="Title text", text="Welcome")
+    assert elem_text_ok.text == "Welcome"
+
+    # Missing text for type="text"
+    with pytest.raises(ValidationError) as excinfo:
+        CompositionElement(type="text", bbox=[100, 200, 220, 800], desc="Title text")
+    assert "The 'text' field is mandatory" in str(excinfo.value)
+
+    # Valid 0-1000 scale bbox
+    comp_ok = CompositionalDeconstruction(
+        background="blue sky",
+        elements=[
+            CompositionElement(type="obj", bbox=[100, 200, 900, 800], desc="A balloon"),
+            CompositionElement(type="text", bbox=[10, 20, 50, 40], desc="Small text", text="A")  # Small logo/text is ok if overall max > 100
+        ]
+    )
+
+    # Invalid 0-100 percentage scale bbox
+    with pytest.raises(ValidationError) as excinfo:
+        CompositionalDeconstruction(
+            background="blue sky",
+            elements=[
+                CompositionElement(type="obj", bbox=[10, 20, 90, 80], desc="A balloon"),
+                CompositionElement(type="text", bbox=[5, 10, 40, 30], desc="Small text", text="A")
+            ]
+        )
+    assert "0-100 percentage scale" in str(excinfo.value)
+
+    # Invalid vertical pillar text bbox (axis swap)
+    with pytest.raises(ValidationError) as excinfo:
+        CompositionElement(
+            type="text",
+            bbox=[150, 100, 850, 400],
+            desc="Squeezed header text",
+            text="Barista quality coffee at home."
+        )
+    assert "extremely tall and narrow" in str(excinfo.value)
+
+    # Invalid too tall text bbox
+    with pytest.raises(ValidationError) as excinfo:
+        CompositionElement(
+            type="text",
+            bbox=[300, 100, 700, 900],  # height = 400
+            desc="Header text",
+            text="Tired of bitter\ngrocery store coffee?"  # 2 lines, max allowed height is 300
+        )
+    assert "too tall" in str(excinfo.value)
+
+    # Invalid spelling typo (distance = 1 anomaly against user prompt words)
+    from app.agent.orchestrator import active_user_words
+    token = active_user_words.set({"grocery", "coffee", "bitter", "store"})
+    try:
+        with pytest.raises(ValidationError) as excinfo:
+            CompositionElement(
+                type="text",
+                bbox=[100, 150, 220, 850],
+                desc="Header text",
+                text="Tired of biter gocery store cofee?"
+            )
+        assert "Spelling anomaly detected" in str(excinfo.value)
+    finally:
+        active_user_words.reset(token)
+
+
 if __name__ == "__main__":
     import sys
     # Add project root to sys.path so we can import app

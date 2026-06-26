@@ -88,7 +88,7 @@ async def chat_with_agent(
     image_filename = None
     doc_filename = None
     
-    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/MilleniumRadius/gen-content")
+    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
     os.makedirs(shared_root, exist_ok=True)
     
     if "multipart/form-data" in content_type:
@@ -211,7 +211,7 @@ async def chat_with_agent(
     # 3. Build agent invocation config
     config = {
         "configurable": {"thread_id": str(session_id)},
-        "recursion_limit": 75
+        "recursion_limit": 90
     }
     inputs = {"messages": formatted_messages}
 

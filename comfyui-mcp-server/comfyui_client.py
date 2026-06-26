@@ -184,6 +184,7 @@ class ComfyUIClient:
         return metadata
 
     def _queue_workflow(self, workflow: Dict[str, Any]):
+        logger.info(f"Dispatching workflow payload to ComfyUI server:\n{json.dumps(workflow, indent=2)}")
         logger.info("Submitting workflow to ComfyUI...")
         response = requests.post(f"{self.base_url}/prompt", json={"prompt": workflow}, timeout=30)
         if response.status_code != 200:

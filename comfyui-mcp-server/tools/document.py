@@ -20,7 +20,7 @@ def validate_path_in_workspace(path_str: str) -> str:
     Validates that path_str resolves to a path strictly within SHARED_WORKSPACE_ROOT.
     Returns the absolute path as a string if valid, otherwise raises ValueError.
     """
-    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/MilleniumRadius/gen-content")
+    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
     shared_root_path = Path(shared_root).resolve()
     
     # Resolve the incoming path

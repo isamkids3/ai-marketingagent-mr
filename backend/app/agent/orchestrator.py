@@ -26,8 +26,23 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 # pyrefly: ignore [missing-import]
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, create_model, Field
+from pydantic import BaseModel, create_model, Field, model_validator
 import httpx
+
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    if len(s1) > len(s2):
+        s1, s2 = s2, s1
+    distances = range(len(s1) + 1)
+    for i2, c2 in enumerate(s2):
+        distances_ = [i2+1]
+        for i1, c1 in enumerate(s1):
+            if c1 == c2:
+                distances_.append(distances[i1])
+            else:
+                distances_.append(1 + min((distances[i1], distances[i1 + 1], distances_[-1])))
+        distances = distances_
+    return distances[-1]
 
 
 class CompositionElement(BaseModel):
@@ -37,16 +52,74 @@ class CompositionElement(BaseModel):
     )
     bbox: Optional[List[int]] = Field(
         None,
-        description="Bounding box [y1, x1, y2, x2] normalized to 0-1000. y1 < y2, x1 < x2. Top-left origin. MANDATORY: You must always specify this to ground all visual elements and prevent overlapping layout safety blocks."
+        description="Bounding box [y1, x1, y2, x2] normalized to a 0-1000 scale. Top-left origin. MANDATORY: Specify on a 0-1000 scale. WARNING: DO NOT use 0-100 percentages (e.g. write 100 to 900, NOT 10 to 90). WARNING: You MUST use the Y-first format [y1, x1, y2, x2]. DO NOT swap X and Y (e.g. do NOT write [x1, y1, x2, y2], which turns horizontal layouts into vertical pillars)."
     )
     desc: str = Field(
         ...,
-        description="30-60 words description. For 'obj': physical details (skin tone, clothing, material, colors). For 'text': font style, size, color, placement description."
+        description=(
+            "30-60 words description. For 'obj': physical details (MANDATORY: NEVER name specific clothing "
+            "garments like swimsuit, bikini, or underwear; instead describe the environment and situational "
+            "context, e.g. 'enjoying a sunny resort pool area'). For 'text': font style, size, color, placement description."
+        )
     )
     text: Optional[str] = Field(
         None,
-        description="Verbatim characters to render. REQUIRED ONLY for 'text' type elements. Use \\n for line breaks."
+        description="Verbatim characters to render. REQUIRED ONLY for 'text' type elements. Use \\n for line breaks. You MUST provide the literal text string here if type is 'text'."
     )
+
+    @model_validator(mode="after")
+    def validate_text_for_typography(self) -> 'CompositionElement':
+        if self.type == "text":
+            if not self.text:
+                raise ValueError(
+                    "The 'text' field is mandatory and must not be empty or null when element 'type' is 'text'."
+                )
+            if self.bbox:
+                y1, x1, y2, x2 = self.bbox
+                height = y2 - y1
+                width = x2 - x1
+                # Check for vertical pillar trap (likely X/Y swapped coordinates)
+                if height > 2.0 * width and len(self.text) > 12 and self.text.count('\n') < 2:
+                    raise ValueError(
+                        f"The text bounding box {self.bbox} is extremely tall and narrow (height={height}, width={width}), "
+                        f"but the text '{self.text}' is a long horizontal string ({len(self.text)} chars) with fewer than 2 line breaks. "
+                        "This will squeeze the text into a vertical pillar and cause layout/spelling glitches. "
+                        "Please check if you swapped X and Y coordinates (you MUST use [y1, x1, y2, x2] order), "
+                        "or widen the box and add manual '\\n' line breaks."
+                    )
+                # Check for excessive height relative to line count (causes text duplication/stretching)
+                num_lines = self.text.count('\n') + 1
+                max_allowed_height = num_lines * 150
+                if height > max_allowed_height:
+                    raise ValueError(
+                        f"The text bounding box {self.bbox} has a height of {height} for {num_lines} line(s) of text. "
+                        f"This is too tall (max height allowed for {num_lines} line(s) is {max_allowed_height}). "
+                        "Excessive vertical space forces the generator to duplicate lines or stretch text. "
+                        "Please decrease the bounding box height (y2 - y1) to fit the text tightly (recommend <= 120 per line)."
+                    )
+            # Check for spelling typos against user prompt words
+            user_words = active_user_words.get()
+            if user_words:
+                import re
+                agent_words = re.findall(r'\b[a-zA-Z]{4,}\b', self.text.lower())
+                for w_agent in agent_words:
+                    if w_agent not in user_words:
+                        for w_user in user_words:
+                            if len(w_user) >= 5 and levenshtein_distance(w_agent, w_user) == 1:
+                                # Skip valid pluralizations / simple suffixes
+                                if w_agent.startswith(w_user) and w_agent[-1] == 's':
+                                    continue
+                                if w_user.endswith('e') and w_agent == w_user[:-1] + 'ed':
+                                    continue
+                                if w_agent == w_user + 'ed':
+                                    continue
+                                if w_agent == w_user + 's':
+                                    continue
+                                raise ValueError(
+                                    f"Spelling anomaly detected: The word '{w_agent}' in layout text is extremely close to the user's word '{w_user}' from chat history, "
+                                    f"but is not equal. Please check for spelling typos in the text element (e.g., 'gocery' instead of 'grocery', or 'cofee' instead of 'coffee')."
+                                )
+        return self
 
 
 class CompositionalDeconstruction(BaseModel):
@@ -58,6 +131,19 @@ class CompositionalDeconstruction(BaseModel):
         ...,
         description="List of all individually placeable objects, characters, visual graphic elements, and typography text blocks."
     )
+
+    @model_validator(mode="after")
+    def validate_coordinate_scale(self) -> 'CompositionalDeconstruction':
+        all_coords = []
+        for el in self.elements:
+            if el.bbox:
+                all_coords.extend(el.bbox)
+        if all_coords and max(all_coords) <= 100:
+            raise ValueError(
+                "All bounding box coordinates are <= 100. It appears you used a 0-100 percentage scale. "
+                "You MUST use a 0-1000 pixel-based scale (e.g. scale up by multiplying by 10, like [100, 200, 900, 800])."
+            )
+        return self
 
 
 class IdeogramPrompt(BaseModel):
@@ -393,7 +479,9 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
 
 8. Ideogram Safety Protocols (Safety Filter Avoidance):
    - Strict Noun Replacement: To prevent the "Image blocked by safety filter" error, NEVER use explicit clothing terms (e.g. "swimsuit", "underwear", "bikini") or sensitive physical descriptors in visual prompts. Instead, describe the situational environment and persona context (e.g., "enjoying a hot summer day at a luxury resort pool area", "athletic training in a modern fitness center") and let the model naturally infer context-appropriate attire.
-   - Mandatory Bounding Boxes (Layout Anchoring): Every visual element, object, or text overlay in the compositional deconstruction MUST have explicit, non-overlapping `bbox` coordinates defined to anchor the layout and prevent visual overlaps that trigger safety filters.
+   - Mandatory Bounding Boxes (Layout Anchoring): Every visual element, object, or text overlay in the compositional deconstruction MUST have explicit, non-overlapping `bbox` coordinates defined to anchor the layout and prevent visual overlaps that trigger safety filters. Crucially, coordinates MUST be specified on a 0-1000 scale (e.g., [100, 200, 900, 800]), NOT as 0-100 percentages (e.g., [10, 20, 90, 80]). WARNING: You MUST use the Y-first format [y1, x1, y2, x2]. DO NOT swap X and Y (e.g., do not write [x1, y1, x2, y2], which squishes horizontal layouts into vertical pillars and causes spelling glitches).
+
+9. Ideogram Infographic & Layout Discipline: If generating an infographic, flowchart, or multi-item list/comparison (e.g., "benefits with icons and labels"), you MUST explicitly define **every single item, icon/graphic, shape, and text label** in the JSON `elements` list with its own individual bounding box. If the user request is high-level, you must still expand it into a detailed, fully deconstructed layout. You are strictly forbidden from writing a high-level description for a multi-item infographic but only defining a single element in the JSON, as this forces the renderer to hallucinate the remaining elements, resulting in gibberish text and graphics.
 </strategic_operational_rules>
 
 <loop_prevention>
@@ -449,6 +537,9 @@ active_session_id: ContextVar[str] = ContextVar("active_session_id", default="de
 # ContextVar to hold the current agent temperature override
 active_temperature: ContextVar[Optional[float]] = ContextVar("active_temperature", default=None)
 
+# ContextVar to hold the unique words from user messages in the chat history
+active_user_words: ContextVar[set] = ContextVar("active_user_words", default=set())
+
 class AgentSessionProxy:
     """
     A proxy wrapper for the compiled agent that intercepts ainvoke, invoke,
@@ -459,6 +550,23 @@ class AgentSessionProxy:
         self.session = None
         self._session_id: str = "default"
         self.tone: Optional[str] = None
+
+    def _extract_user_words(self, inputs) -> set:
+        words = set()
+        if inputs and "messages" in inputs and inputs["messages"]:
+            for msg in inputs["messages"]:
+                role = getattr(msg, "type", "")
+                if not role:
+                    role = msg.get("role", "") if isinstance(msg, dict) else ""
+                if role in ("user", "human"):
+                    content = getattr(msg, "content", "")
+                    if not content and isinstance(msg, dict):
+                        content = msg.get("content", "")
+                    if isinstance(content, str):
+                        import re
+                        for w in re.findall(r'\b[a-zA-Z]{3,}\b', content.lower()):
+                            words.add(w)
+        return words
 
     def _inject_date_context(self, inputs):
         if not inputs or "messages" not in inputs or not inputs["messages"]:
@@ -500,6 +608,7 @@ class AgentSessionProxy:
         inputs = self._inject_date_context(inputs)
         token_mcp = active_mcp_session.set(self.session)
         token_sid = active_session_id.set(self._session_id or "default")
+        token_words = active_user_words.set(self._extract_user_words(inputs))
         tone_map = {
             "Strict Coder": 0.3,
             "Professional": 0.6,
@@ -512,12 +621,14 @@ class AgentSessionProxy:
         finally:
             active_mcp_session.reset(token_mcp)
             active_session_id.reset(token_sid)
+            active_user_words.reset(token_words)
             active_temperature.reset(token_temp)
 
     async def invoke(self, inputs, config=None, **kwargs):
         inputs = self._inject_date_context(inputs)
         token_mcp = active_mcp_session.set(self.session)
         token_sid = active_session_id.set(self._session_id or "default")
+        token_words = active_user_words.set(self._extract_user_words(inputs))
         tone_map = {
             "Strict Coder": 0.3,
             "Professional": 0.6,
@@ -530,6 +641,7 @@ class AgentSessionProxy:
         finally:
             active_mcp_session.reset(token_mcp)
             active_session_id.reset(token_sid)
+            active_user_words.reset(token_words)
             active_temperature.reset(token_temp)
 
     async def astream_events(self, inputs, config=None, **kwargs):
@@ -541,6 +653,7 @@ class AgentSessionProxy:
             sid = config.get("configurable", {}).get("thread_id", "default")
         token_mcp = active_mcp_session.set(self.session)
         token_sid = active_session_id.set(sid)
+        token_words = active_user_words.set(self._extract_user_words(inputs))
         tone_map = {
             "Strict Coder": 0.3,
             "Professional": 0.6,
@@ -554,6 +667,7 @@ class AgentSessionProxy:
         finally:
             active_mcp_session.reset(token_mcp)
             active_session_id.reset(token_sid)
+            active_user_words.reset(token_words)
             active_temperature.reset(token_temp)
 
     def __getattr__(self, name):
@@ -590,7 +704,7 @@ def connect_to_mcp_server():
         logger.warning("Could not connect to MCP server via Streamable HTTP. Falling back to stdio.")
 
     # Fallback to stdio command line
-    server_script = os.getenv("MCP_SERVER_SCRIPT", "/Users/adamdali/Documents/MilleniumRadius/comfyui-mcp-server/server.py")
+    server_script = os.getenv("MCP_SERVER_SCRIPT", "/Users/adamdali/Documents/AI_Agent_MR/comfyui-mcp-server/server.py")
     
     # Dynamically locate the python interpreter inside the comfyui-mcp-server's virtual environment
     mcp_dir = os.path.dirname(server_script)
