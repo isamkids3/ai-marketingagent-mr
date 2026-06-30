@@ -13,7 +13,7 @@ import httpx
 
 from app.api.deps import get_current_active_user, get_db
 from app.models.user import User
-from app.agent.orchestrator import get_marketing_agent, connect_to_mcp_server
+from app.agent.orchestrator import get_marketing_agent, connect_to_mcp_server, connect_to_all_mcp_servers
 from app.agent.comfy_router import WorkspaceManager
 from mcp import ClientSession
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,16 +80,10 @@ async def trigger_marketing_campaign(
         config = {"configurable": {"thread_id": request.thread_id}}
         inputs = {"messages": [{"role": "user", "content": request.prompt}]}
         
-        # Connect to ComfyUI MCP Server, initialize session, dynamically compile agent, and run
-        async with connect_to_mcp_server() as conn:
-            if len(conn) == 3:
-                read_stream, write_stream, _ = conn
-            else:
-                read_stream, write_stream = conn
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                agent = await get_marketing_agent(session, session_id=request.thread_id)  # type: ignore
-                await agent.ainvoke(inputs, config=config)
+        # Connect to all configured MCP servers, dynamically compile agent, and run
+        async with connect_to_all_mcp_servers() as sessions:
+            agent = await get_marketing_agent(sessions, session_id=request.thread_id)  # type: ignore
+            await agent.ainvoke(inputs, config=config)
 
     background_tasks.add_task(run_agent_workflow)
     
@@ -224,10 +218,19 @@ async def chat_with_agent(
         custom_prompt = f"[Uploaded Document: /sandbox/{session_id_str}/{doc_filename}]\n" + custom_prompt
 
     # 1. Save user message to database
+    meta = {}
+    if tone:
+        meta["tone"] = tone
+    if image_filename:
+        meta["image_path"] = f"/sandbox/{session_id_str}/{image_filename}"
+    if doc_filename:
+        meta["doc_path"] = f"/sandbox/{session_id_str}/{doc_filename}"
+        meta["doc_name"] = doc_filename
+
     user_msg_in = ChatMessageCreate(
         role="user",
         content={"text": prompt},
-        meta_data={"tone": tone} if tone else None
+        meta_data=meta if meta else None
     )
     await create_message(db, session_id=session_id, message_in=user_msg_in)
     
@@ -286,63 +289,57 @@ async def chat_with_agent(
         all_new_messages = []
 
         try:
-            async with connect_to_mcp_server() as conn:
-                if len(conn) == 3:
-                    read_stream, write_stream, _ = conn
-                else:
-                    read_stream, write_stream = conn
-                async with ClientSession(read_stream, write_stream) as mcp_session:
-                    await mcp_session.initialize()
-                    agent = await get_marketing_agent(mcp_session, session_id=session_id_str, tone=tone)  # type: ignore
+            async with connect_to_all_mcp_servers() as sessions:
+                agent = await get_marketing_agent(sessions, session_id=session_id_str, tone=tone)  # type: ignore
 
-                    # Stream events from the agent using LangGraph's astream_events v2
-                    async for event in agent.astream_events(inputs, config=config, version="v2"):
-                        kind = event.get("event", "")
-                        
-                        # ── Agent thinking / intermediate text token ──
-                        if kind == "on_chat_model_stream":
-                            chunk = event.get("data", {}).get("chunk")
-                            if chunk and hasattr(chunk, "content"):
-                                text_delta = ""
-                                if isinstance(chunk.content, str):
-                                    text_delta = chunk.content
-                                elif isinstance(chunk.content, list):
-                                    for part in chunk.content:
-                                        if isinstance(part, dict) and part.get("type") == "text":
-                                            text_delta += part.get("text", "")
-                                if text_delta:
-                                    accumulated_ai_text += text_delta
-                                    yield _sse("agent_thought", {"delta": text_delta})
+                # Stream events from the agent using LangGraph's astream_events v2
+                async for event in agent.astream_events(inputs, config=config, version="v2"):
+                    kind = event.get("event", "")
+                    
+                    # ── Agent thinking / intermediate text token ──
+                    if kind == "on_chat_model_stream":
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk and hasattr(chunk, "content"):
+                            text_delta = ""
+                            if isinstance(chunk.content, str):
+                                text_delta = chunk.content
+                            elif isinstance(chunk.content, list):
+                                for part in chunk.content:
+                                    if isinstance(part, dict) and part.get("type") == "text":
+                                        text_delta += part.get("text", "")
+                            if text_delta:
+                                accumulated_ai_text += text_delta
+                                yield _sse("agent_thought", {"delta": text_delta})
 
-                        # ── Tool about to be called ──
-                        elif kind == "on_tool_start":
-                            tool_name = event.get("name", "unknown_tool")
-                            tool_input = event.get("data", {}).get("input", {})
-                            logger.info(f"[Stream] Tool starting: {tool_name}")
-                            yield _sse("tool_start", {
-                                "tool": tool_name,
-                                "input": tool_input,
-                            })
+                    # ── Tool about to be called ──
+                    elif kind == "on_tool_start":
+                        tool_name = event.get("name", "unknown_tool")
+                        tool_input = event.get("data", {}).get("input", {})
+                        logger.info(f"[Stream] Tool starting: {tool_name}")
+                        yield _sse("tool_start", {
+                            "tool": tool_name,
+                            "input": tool_input,
+                        })
 
-                        # ── Tool call finished ──
-                        elif kind == "on_tool_end":
-                            tool_name = event.get("name", "unknown_tool")
-                            tool_output = event.get("data", {}).get("output", "")
-                            # Trim long outputs to keep SSE payload small
-                            output_str = str(tool_output)
-                            if len(output_str) > 400:
-                                output_str = output_str[:400] + "…"
-                            logger.info(f"[Stream] Tool finished: {tool_name}")
-                            yield _sse("tool_end", {
-                                "tool": tool_name,
-                                "output": output_str,
-                            })
+                    # ── Tool call finished ──
+                    elif kind == "on_tool_end":
+                        tool_name = event.get("name", "unknown_tool")
+                        tool_output = event.get("data", {}).get("output", "")
+                        # Trim long outputs to keep SSE payload small
+                        output_str = str(tool_output)
+                        if len(output_str) > 400:
+                            output_str = output_str[:400] + "…"
+                        logger.info(f"[Stream] Tool finished: {tool_name}")
+                        yield _sse("tool_end", {
+                            "tool": tool_name,
+                            "output": output_str,
+                        })
 
-                        # ── Final model output (complete message) ──
-                        elif kind == "on_chain_end" and not event.get("parent_ids"):
-                            output = event.get("data", {}).get("output")
-                            if isinstance(output, dict):
-                                all_new_messages = output.get("messages", [])
+                    # ── Final model output (complete message) ──
+                    elif kind == "on_chain_end" and not event.get("parent_ids"):
+                        output = event.get("data", {}).get("output")
+                        if isinstance(output, dict):
+                            all_new_messages = output.get("messages", [])
 
             # ── Persist all new messages to the DB ──
             saved_msgs = []

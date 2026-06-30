@@ -507,6 +507,11 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - **Token-Budget Optimization (BBox & Element Limits)**: To prevent JSON truncation and LLM output token limit errors, you MUST:
      - **Limit Elements Count**: Limit the visual layout to a maximum of 6 elements per image (especially for infographics or split-screens).
      - **Concise Descriptions**: Keep each element's description concise and strictly under 40 words. Do not use overly descriptive micro-prose. This forces compact JSON output and avoids truncation failures.
+
+10. Social Media Integration & Postiz Tools: If the user asks to view connected accounts, check posting requirements, publish, or schedule posts to social media platforms (such as X/Twitter, LinkedIn, Facebook, etc.):
+    - First, list connected accounts using `integrationList` to see what channels are connected and their IDs.
+    - If needed, check platform-specific limits and posting schemas using `integrationSchema` with the target `platform` name (e.g., "x", "linkedin") to learn the rules (character limits, media requirements).
+    - To draft, schedule, or immediately publish a post, call `schedulePostTool`. Provide the list of target `integrationIds` and the formatted `content` and optional media attachments.
 </strategic_operational_rules>
 
 <loop_prevention>
@@ -748,7 +753,57 @@ def connect_to_mcp_server():
     logger.info(f"Starting MCP server via stdio using python at {venv_python} and script {server_script}")
     return stdio_client(server_params)
 
-def mcp_tool_to_langchain(mcp_tool):
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def connect_to_all_mcp_servers():
+    """
+    Connects to both ComfyUI MCP and Postiz MCP servers concurrently.
+    Yields a dictionary of active sessions: {"comfyui": comfyui_session, "postiz": postiz_session}
+    """
+    # 1. Connect to ComfyUI MCP Server
+    comfyui_ctx = connect_to_mcp_server()
+    async with comfyui_ctx as comfyui_conn:
+        if len(comfyui_conn) == 3:
+            c_read, c_write, _ = comfyui_conn
+        else:
+            c_read, c_write = comfyui_conn
+            
+        async with ClientSession(c_read, c_write) as comfyui_session:
+            await comfyui_session.initialize()
+            sessions = {"comfyui": comfyui_session}
+            
+            # 2. Connect to Postiz MCP Server (if API key is set)
+            postiz_api_key = os.getenv("POSTIZ_API_KEY")
+            if postiz_api_key and postiz_api_key.strip():
+                postiz_url = os.getenv("POSTIZ_MCP_URL", "https://api.postiz.com/mcp").rstrip("/")
+                logger.info(f"Connecting to Postiz MCP Server at {postiz_url}...")
+                
+                headers = {"Authorization": f"Bearer {postiz_api_key}"}
+                postiz_ctx = streamablehttp_client(postiz_url, headers=headers)
+                
+                try:
+                    async with postiz_ctx as postiz_conn:
+                        if len(postiz_conn) == 3:
+                            p_read, p_write, _ = postiz_conn
+                        else:
+                            p_read, p_write = postiz_conn
+                        async with ClientSession(p_read, p_write) as postiz_session:
+                            await postiz_session.initialize()
+                            sessions["postiz"] = postiz_session
+                            logger.info("Successfully connected to Postiz MCP Server!")
+                            yield sessions
+                except Exception as e:
+                    logger.error(f"Failed to connect to Postiz MCP Server: {e}")
+                    # If Postiz fails, gracefully proceed with just ComfyUI
+                    yield sessions
+            else:
+                logger.info("Postiz MCP Server not configured (missing POSTIZ_API_KEY).")
+                yield sessions
+
+
+def mcp_tool_to_langchain(mcp_tool, session: ClientSession):
     tool_name = mcp_tool.name
     tool_desc = mcp_tool.description
     input_schema = mcp_tool.inputSchema
@@ -804,17 +859,13 @@ def mcp_tool_to_langchain(mcp_tool):
         # Resolve session_id "current" to active session ID
         if "session_id" in resolved_kwargs and resolved_kwargs["session_id"] == "current":
             resolved_kwargs["session_id"] = active_session_id.get()
-
+ 
         # Inject session_id if the tool schema accepts it and it is not already provided
         session_id = active_session_id.get()
         if session_id and "session_id" in args_schema.model_fields and "session_id" not in resolved_kwargs:
             resolved_kwargs["session_id"] = session_id
-
-        # 2. Invoke MCP Tool
-        session = active_mcp_session.get()
-        if not session:
-            raise RuntimeError("No active MCP session found in context.")
-            
+ 
+        # 2. Invoke MCP Tool directly on the session closure
         logger.info(f"Calling MCP tool '{tool_name}' with args {resolved_kwargs}")
         result = await session.call_tool(tool_name, resolved_kwargs)
         
@@ -891,24 +942,46 @@ def mcp_tool_to_langchain(mcp_tool):
         args_schema=args_schema
     )
 
-async def get_marketing_agent(session: ClientSession, session_id: str = "default", tone: Optional[str] = None):
+async def get_marketing_agent(sessions, session_id: str = "default", tone: Optional[str] = None):
     """
     Dynamically discover, list, and register tools exposed by the MCP server,
     compiling the Deep Agent with dynamic tools and local utilities.
     """
     global _cached_agent
+    
+    # Handle single ClientSession passed for backward compatibility
+    if not isinstance(sessions, dict):
+        sessions_dict = {"comfyui": sessions}
+    else:
+        sessions_dict = sessions
+        
+    comfyui_session = sessions_dict["comfyui"]
+    
     if _cached_agent is not None:
-        _cached_agent.session = session
+        _cached_agent.session = comfyui_session
         _cached_agent._session_id = session_id
         _cached_agent.tone = tone
         return _cached_agent
         
     logger.info("Discovering tools from ComfyUI MCP Server...")
-    mcp_tools_list = await session.list_tools()
+    comfyui_tools_list = await comfyui_session.list_tools()
     
     # Convert MCP tools to LangChain tools (excluding view_image and read_user_document to prevent conflicts)
-    lc_mcp_tools = [mcp_tool_to_langchain(t) for t in mcp_tools_list.tools if t.name not in ("view_image", "read_user_document")]
-    logger.info(f"Registered {len(lc_mcp_tools)} tools from MCP server dynamically: {[t.name for t in lc_mcp_tools]}")
+    lc_mcp_tools = [mcp_tool_to_langchain(t, comfyui_session) for t in comfyui_tools_list.tools if t.name not in ("view_image", "read_user_document")]
+    
+    # Check if Postiz session is available
+    if "postiz" in sessions_dict:
+        logger.info("Discovering tools from Postiz MCP Server...")
+        postiz_session = sessions_dict["postiz"]
+        try:
+            postiz_tools_list = await postiz_session.list_tools()
+            lc_postiz_tools = [mcp_tool_to_langchain(t, postiz_session) for t in postiz_tools_list.tools]
+            lc_mcp_tools.extend(lc_postiz_tools)
+            logger.info(f"Registered {len(lc_postiz_tools)} tools from Postiz MCP server dynamically.")
+        except Exception as e:
+            logger.error(f"Failed to list tools from Postiz MCP: {e}")
+            
+    logger.info(f"Registered {len(lc_mcp_tools)} tools from MCP servers dynamically: {[t.name for t in lc_mcp_tools]}")
     
     # Combine with local backend tools
     all_tools = [
@@ -927,7 +1000,7 @@ async def get_marketing_agent(session: ClientSession, session_id: str = "default
         logger.info(f"Copied agent skills from {src_skills} to {dst_skills}")
     else:
         logger.warning(f"Skills source folder not found at {src_skills}")
-
+ 
     raw_agent = create_deep_agent(
         model=agent_llm,
         tools=all_tools,
@@ -936,7 +1009,7 @@ async def get_marketing_agent(session: ClientSession, session_id: str = "default
         skills=["/workspace/skills"]
     )
     _cached_agent = AgentSessionProxy(raw_agent)
-    _cached_agent.session = session
+    _cached_agent.session = comfyui_session
     _cached_agent._session_id = session_id
     _cached_agent.tone = tone
     return _cached_agent
