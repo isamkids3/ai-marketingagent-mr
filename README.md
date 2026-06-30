@@ -9,6 +9,7 @@ Users submit campaign briefs, prompts, or product asset photos, and the system i
 ## 1. Project Capabilities & Features
 
 * **Multimodal Chat Interaction:** Supports full iterative conversational refinement with image attachments, follow-up instructions, and context retention.
+* **Interactive Image Masking & Local Inpainting:** Allows users to paint mask overlays directly on reference images using an interactive brush canvas modal (brush sizes, draw/erase toggle, undo history). The backend automatically handles ComfyUI RGBA merging and alpha inversion.
 * **Intelligent Routing & Framing:** Analyzes intent using a local LLM to route tasks dynamically between text-to-image, reference-image-to-image, and brand/tone transformations (casual, professional, creative).
 * **Multi-Platform Aspect Formatter:** Automatically formats final media deliverables using localized social media layout templates and platform ratios.
 * **Context Window Optimization:** Operates entirely locally on a 42,000 token limit using dynamic schema lazy-loading (on-demand MCP tool loading) and strict message boundaries to prevent context bloat.
@@ -16,17 +17,32 @@ Users submit campaign briefs, prompts, or product asset photos, and the system i
 
 ---
 
-## 2. System Architecture
+## 2. Technical Stack
+
+| Layer / Component | Technology | Description / Usage |
+| :--- | :--- | :--- |
+| **Frontend UI** | Next.js 16 + React 19 + Tailwind CSS v4 | Interactive UI client, styled with Tailwind CSS, featuring HTML5 Canvas for the image masking tools. |
+| **Web Backend** | Python + FastAPI + Uvicorn | Session control, authentication, SSE streams, static asset delivery, and Pillow (PIL) for image/mask merging. |
+| **Datastore** | PostgreSQL 16 (Dockerized) | Persistent storage for users, chat histories, session logs, and assets. |
+| **AI Agent Framework** | LangChain | Core orchestrator for routing, message memory management, and MCP tool bindings. |
+| **AI Agent Search Engine** | Tavily | Dynamic web-search integration for live market research and context enrichment. |
+| **Inference LLM** | Qwen 3.6 - 35B | Locally hosted large language model running inside a vLLM container for fast local orchestration. |
+| **Creator MCP API** | Python (Model Context Protocol) | Custom server based on [comfyui-mcp-server](https://github.com/joenorton/comfyui-mcp-server) exposing dynamic generation and registry tools. |
+| **Image Generation** | ComfyUI + Ideogram 4.0 + Flux 2.1 (Dev) | Locally hosted hardware-accelerated diffusion pipeline for high-fidelity asset rendering. |
+
+---
+
+## 3. System Architecture
 
 The platform operates on a **5-tier decoupled architecture** spanning web, intelligence, protocol, and hardware rendering layers.
 
 ```
 +-------------------------------------------------------------+
 |                     Layer 1: Frontend UI                    |
-|                Next.js 16 + React 19 + Tailwind             |
+|             Next.js 16 + React 19 + Tailwind v4             |
 +------------------------------+------------------------------+
                                |
-                               | (HTTP Fetch / WebSockets)
+                               | (HTTP Fetch / WebSockets / SSE)
                                v
 +-------------------------------------------------------------+
 |          LAYER 2 & 3: AI ORCHESTRATOR & WEB BACKEND         |
@@ -60,15 +76,15 @@ The platform operates on a **5-tier decoupled architecture** spanning web, intel
 ```
 
 ### Communication Protocols
-* **Layer 1 to Layer 2 & 3:** REST APIs (HTTP Fetch) for session control, user authentication, and system health status. Stateful WebSockets stream active chat messages and token generations.
-* **Layer 2 & 3 to Layer 4:** Model Context Protocol (MCP) JSON payloads served via SSE (Server-Sent Events) or stdio transport.
+* **Layer 1 to Layer 2 & 3:** REST APIs (HTTP Fetch) for session control, user authentication, and system health status. Server-Sent Events (SSE) stream active chat messages and token generations.
+* **Layer 2 & 3 to Layer 4:** Model Context Protocol (MCP) JSON payloads served via stdio or SSE transport.
 * **Layer 4 to Layer 5:** Local WebSockets and REST endpoints (`/view`, `/upload`, `/prompt`) hosted by ComfyUI to control execution graph pipelines.
 
 ---
 
-## 3. Repository Directory Structure
+## 4. Repository Directory Structure
 
-The workspace is organized into separate repositories interlocking via config variables and shared mounts:
+The workspace is organized into separate directories interlocking via config variables and shared mounts:
 
 ```
 MilleniumRadius/
@@ -99,19 +115,20 @@ MilleniumRadius/
 
 ---
 
-## 4. Core Operational Flow
+## 5. Core Operational Flow
 
-1. **Ingestion:** The user submits a prompt, product image, or PDF campaign brief to the **Layer 1 UI**.
-2. **Intent Parsing:** **Layer 2 & 3** receives the payload. The LangChain orchestrator prompts the **Qwen LLM** to extract target tones, demography data, and decide if image generation or editing is required.
-3. **MCP Tool Dispatch:** The LLM requests tool execution. The agent triggers MCP client tools (`text_image`, `image_image`, etc.) registered dynamically from the **Layer 4 MCP Server**.
-4. **Pre-flight & Workspace Mapping:** The backend translates virtual document paths into local absolute paths within `gen-content/` and forwards the structured parameters to **Layer 4**.
-5. **Graph Unrolling & Compiling:** The **Layer 4 MCP Server** compiles parameters directly into a ComfyUI execution graph.
-6. **Hardware Render:** The local **ComfyUI engine (Layer 5)** processes the workflows using Ideogram 4.0/Flux and outputs files to `gen-content/`.
-7. **Deliverable Adaptation:** The backend processes generated assets, copies them to the public `/shares` path, applies platform formatting/aspect ratio modifications, and streams the finished assets to the UI.
+1. **Ingestion:** The user submits a prompt, product image, brief, or mask paint payload to the **Layer 1 UI**.
+2. **Intent Parsing:** **Layer 2 & 3** receives the payload. The LangChain orchestrator prompts the **Qwen LLM** to extract target tones, demography data, and decide if image generation, reference img2img, or local mask-inpainting (`mask_image_image`) is required.
+3. **Pillow Mask Merging (Inpainting only):** If a mask is provided, the backend merges the original image and mask into a single RGBA PNG. Grayscale mask values are mathematically inverted to match ComfyUI alpha conventions (`alpha = 255 - mask_pixel`).
+4. **MCP Tool Dispatch:** The LLM requests tool execution. The agent triggers MCP client tools (`text_image`, `image_image`, `mask_image_image`) registered dynamically from the **Layer 4 MCP Server**.
+5. **Pre-flight & Workspace Mapping:** The backend translates virtual document paths into local absolute paths within `gen-content/` and forwards the structured parameters to **Layer 4**.
+6. **Graph Unrolling & Compiling:** The **Layer 4 MCP Server** compiles parameters directly into a ComfyUI execution graph. For inpainting, it prioritizes `SaveImage` node outputs to return the final stitched rendering instead of intermediate cropped previews.
+7. **Hardware Render:** The local **ComfyUI engine (Layer 5)** processes the workflows using Ideogram 4.0/Flux and outputs files to `gen-content/`.
+8. **Deliverable Adaptation:** The backend processes generated assets, copies them to the public `/shares` path, applies platform formatting/aspect ratio modifications, and streams the finished assets to the UI.
 
 ---
 
-## 5. Startup & Deployment Guide
+## 6. Startup & Deployment Guide
 
 Follow these sequential steps to boot the entire local stack.
 
@@ -319,7 +336,7 @@ Boot the client user interface.
 
 ---
 
-## 6. Verification and Diagnostics
+## 7. Verification and Diagnostics
 
 Ensure layers are properly routing communications using these check commands.
 
