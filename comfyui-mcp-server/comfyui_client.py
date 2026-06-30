@@ -75,7 +75,7 @@ class ComfyUIClient:
             }
 
         # Extract asset info (filename, subfolder, type) - stable identity
-        asset_info = self._extract_first_asset_info(outputs, preferred_output_keys)
+        asset_info = self._extract_first_asset_info(outputs, preferred_output_keys, workflow)
         asset_url = asset_info["asset_url"]
         
         # Extract asset metadata (pass workflow to extract dimensions from it)
@@ -419,12 +419,55 @@ class ComfyUIClient:
             f"Available outputs: {json.dumps({k: list(v.keys()) if isinstance(v, dict) else type(v).__name__ for k, v in outputs.items()}, indent=2)}"
         )
     
-    def _extract_first_asset_info(self, outputs: Dict[str, Any], preferred_output_keys: Sequence[str]) -> Dict[str, Any]:
+    def _extract_first_asset_info(self, outputs: Dict[str, Any], preferred_output_keys: Sequence[str], workflow: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Extract first asset info (filename, subfolder, type) from outputs.
         
         Returns dict with 'filename', 'subfolder', 'type', and 'asset_url'.
         """
         logger.debug("Available output keys in workflow: %s", list(outputs.keys()))
+        
+        # Prioritize SaveImage node outputs if workflow is available
+        save_image_node_ids = []
+        if workflow:
+            for node_id, node_data in workflow.items():
+                if isinstance(node_data, dict) and node_data.get("class_type") == "SaveImage":
+                    save_image_node_ids.append(str(node_id))
+
+        # Check SaveImage nodes first
+        for node_id in save_image_node_ids:
+            node_output = outputs.get(node_id)
+            if not node_output or not isinstance(node_output, dict):
+                continue
+            for key in preferred_output_keys:
+                assets = node_output.get(key)
+                if assets and isinstance(assets, list) and len(assets) > 0:
+                    asset = assets[0]
+                    if not isinstance(asset, dict):
+                        continue
+                    filename = asset.get("filename")
+                    if not filename:
+                        continue
+                    subfolder = asset.get("subfolder", "")
+                    output_type = asset.get("type", "output")
+                    
+                    # URL encode for special characters
+                    base_url = self.base_url.rstrip('/')
+                    encoded_filename = quote(filename, safe='')
+                    encoded_subfolder = quote(subfolder, safe='') if subfolder else ''
+                    
+                    if encoded_subfolder:
+                        asset_url = f"{base_url}/view?filename={encoded_filename}&subfolder={encoded_subfolder}&type={output_type}"
+                    else:
+                        asset_url = f"{base_url}/view?filename={encoded_filename}&type={output_type}"
+                    
+                    return {
+                        "filename": filename,
+                        "subfolder": subfolder,
+                        "type": output_type,
+                        "asset_url": asset_url
+                    }
+
+        # Fallback to sequential search if no SaveImage output found
         for node_id, node_output in outputs.items():
             if not isinstance(node_output, dict):
                 continue

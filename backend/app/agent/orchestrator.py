@@ -89,13 +89,13 @@ class CompositionElement(BaseModel):
                     )
                 # Check for excessive height relative to line count (causes text duplication/stretching)
                 num_lines = self.text.count('\n') + 1
-                max_allowed_height = num_lines * 150
+                max_allowed_height = num_lines * 100
                 if height > max_allowed_height:
                     raise ValueError(
                         f"The text bounding box {self.bbox} has a height of {height} for {num_lines} line(s) of text. "
                         f"This is too tall (max height allowed for {num_lines} line(s) is {max_allowed_height}). "
                         "Excessive vertical space forces the generator to duplicate lines or stretch text. "
-                        "Please decrease the bounding box height (y2 - y1) to fit the text tightly (recommend <= 120 per line)."
+                        "Please decrease the bounding box height (y2 - y1) to fit the text tightly (recommend 70-80 per line, e.g. height 210-240 for 3 lines)."
                     )
             # Check for spelling typos against user prompt words
             user_words = active_user_words.get()
@@ -143,6 +143,24 @@ class CompositionalDeconstruction(BaseModel):
                 "All bounding box coordinates are <= 100. It appears you used a 0-100 percentage scale. "
                 "You MUST use a 0-1000 pixel-based scale (e.g. scale up by multiplying by 10, like [100, 200, 900, 800])."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_no_text_obj_overlap(self) -> 'CompositionalDeconstruction':
+        texts = [el for el in self.elements if el.type == "text" and el.bbox]
+        objs = [el for el in self.elements if el.type == "obj" and el.bbox]
+        for t in texts:
+            y1_t, x1_t, y2_t, x2_t = t.bbox
+            for o in objs:
+                y1_o, x1_o, y2_o, x2_o = o.bbox
+                # Check if bounding boxes intersect
+                if not (x2_t <= x1_o or x1_t >= x2_o or y2_t <= y1_o or y1_t >= y2_o):
+                    raise ValueError(
+                        f"Overlap/Intersection detected: The text overlay element '{t.text}' with bbox {t.bbox} "
+                        f"overlaps with the foreground object element '{o.desc[:40]}...' with bbox {o.bbox}. "
+                        "To prevent rendering corruption and pixel-fighting, you MUST keep text and foreground objects physically separate. "
+                        "Please shift or segment their bounding boxes so they do not intersect."
+                    )
         return self
 
 
@@ -347,7 +365,7 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
             
         # 3. Sliding Window Truncation (Token-Based History Eviction)
         current_tokens = self._estimate_tokens(pruned_messages, tools)
-        target_limit = 28000
+        target_limit = 32000
         
         system_msgs = [m for m in pruned_messages if m.__class__.__name__ == "SystemMessage"]
         other_msgs = [m for m in pruned_messages if m.__class__.__name__ != "SystemMessage"]
@@ -460,8 +478,9 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - **Images containing written text**: When generating an image that requires specific written words, typography, signs, logos, or labels within the visual itself, try to use the `text_image` generator tool (as it uses the Ideogram model, which is optimized for readable text rendering).
    - Use `image_reference_and_text_to_image` when the user wants to generate a brand new image using a reference image as a guide for layout, composition, character pose, or style transfer (ControlNet/IP-Adapter style).
    - Use `image_image` when performing Image-to-Image (Img2Img) refinement (e.g. adding elements, changing background, or altering style/details of an existing generated image while keeping its overall content). Set `init_image` to the previously generated image's `/sandbox/...` path from history.
+   - Use `mask_image_image` when the user has uploaded a masked image (which contains both the image and a transparency mask, indicated by `[Uploaded Masked Image: /sandbox/...]`) and wants to perform targeted inpainting/editing on the masked area. Set `image` to the masked image's `/sandbox/...` path.
 
-4. Image Path Reporting — CRITICAL RULE: Every image generation tool (`text_image`, `image_reference_and_text_to_image`, `image_image`) returns a tool observation that begins with `/sandbox/...`. This is the ONLY path you must report to the user. NEVER report the `asset_url`, `image_url`, or any URL from within the JSON body of the tool result — those are internal ComfyUI server URLs (e.g. `http://localhost:8188/view?filename=...` or `/output/...`) that the user cannot access. The tool observation starting with `/sandbox/` is the correct, user-accessible path. Always quote it verbatim.
+4. Image Path Reporting — CRITICAL RULE: Every image generation tool (`text_image`, `image_reference_and_text_to_image`, `image_image`, `mask_image_image`) returns a tool observation that begins with `/sandbox/...`. This is the ONLY path you must report to the user. NEVER report the `asset_url`, `image_url`, or any URL from within the JSON body of the tool result — those are internal ComfyUI server URLs (e.g. `http://localhost:8188/view?filename=...` or `/output/...`) that the user cannot access. The tool observation starting with `/sandbox/` is the correct, user-accessible path. Always quote it verbatim.
 
 5. Single-Shot & Sequential Generation:
    - When generating an image, you MUST define all requested visual elements (including typography, primary subjects, secondary details, and layout composition) in a single JSON prompt and trigger the generation workflow tool once. Do NOT call the generation or regeneration tools multiple times to build up the image iteratively one element at a time. Try your best to generate the image with ONE tool call only.
@@ -476,12 +495,18 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
      b) **Generating a completely new image but using the previous layout/composition as a style guide**: Call the `image_reference_and_text_to_image` tool. Pass the previous image path as `reference_image` and describe the new prompt.
      c) **Deterministic settings tweak (re-running the exact same workflow with specific seed or parameter overrides)**: Call the `regenerate` tool. Pass the `asset_id` and specify the modifications in `param_overrides` (e.g. `param_overrides={"prompt": "updated text"}`).
      d) **Generating a completely different visual from scratch (ignoring the previous image's layout/content)**: Call the `text_image` tool with the new prompt.
+     e) **Inpainting / Localized editing of a specific masked region**: Call the `mask_image_image` tool. Pass the masked image path (which has the transparency mask embedded in its alpha channel, indicated by `[Uploaded Masked Image: /sandbox/...]`) as `image` and describe the inpainting/editing instructions in the `prompt`.
+
 
 8. Ideogram Safety Protocols (Safety Filter Avoidance):
    - Strict Noun Replacement: To prevent the "Image blocked by safety filter" error, NEVER use explicit clothing terms (e.g. "swimsuit", "underwear", "bikini") or sensitive physical descriptors in visual prompts. Instead, describe the situational environment and persona context (e.g., "enjoying a hot summer day at a luxury resort pool area", "athletic training in a modern fitness center") and let the model naturally infer context-appropriate attire.
    - Mandatory Bounding Boxes (Layout Anchoring): Every visual element, object, or text overlay in the compositional deconstruction MUST have explicit, non-overlapping `bbox` coordinates defined to anchor the layout and prevent visual overlaps that trigger safety filters. Crucially, coordinates MUST be specified on a 0-1000 scale (e.g., [100, 200, 900, 800]), NOT as 0-100 percentages (e.g., [10, 20, 90, 80]). WARNING: You MUST use the Y-first format [y1, x1, y2, x2]. DO NOT swap X and Y (e.g., do not write [x1, y1, x2, y2], which squishes horizontal layouts into vertical pillars and causes spelling glitches).
+   - Isolate Text Coordinates: Bounding boxes for text overlays (`type: "text"`) must be strictly separated from backdrop/container objects (`type: "obj"`, such as buttons, badges, banners, or boxes) so they do not overlap. If text is meant to be placed 'on' or 'inside' a shape, do NOT overlap their bounding boxes; instead, allocate a separate, smaller bounding box for the text that sits entirely inside the container box with clean margins. They must not compete or fight for the same pixels, which causes visual artifacts and spelling corruption.
 
 9. Ideogram Infographic & Layout Discipline: If generating an infographic, flowchart, or multi-item list/comparison (e.g., "benefits with icons and labels"), you MUST explicitly define **every single item, icon/graphic, shape, and text label** in the JSON `elements` list with its own individual bounding box. If the user request is high-level, you must still expand it into a detailed, fully deconstructed layout. You are strictly forbidden from writing a high-level description for a multi-item infographic but only defining a single element in the JSON, as this forces the renderer to hallucinate the remaining elements, resulting in gibberish text and graphics.
+   - **Token-Budget Optimization (BBox & Element Limits)**: To prevent JSON truncation and LLM output token limit errors, you MUST:
+     - **Limit Elements Count**: Limit the visual layout to a maximum of 6 elements per image (especially for infographics or split-screens).
+     - **Concise Descriptions**: Keep each element's description concise and strictly under 40 words. Do not use overly descriptive micro-prose. This forces compact JSON output and avoids truncation failures.
 </strategic_operational_rules>
 
 <loop_prevention>
@@ -491,6 +516,7 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
 4. Fail Fast on Errors: If the same tool fails twice in a row, stop retrying. Report the failure to the user and ask for guidance.
 5. No Idle Writes: Do not write intermediate thoughts, plans, or summaries to sandbox files unless they are a direct deliverable. Only write files that the user explicitly needs.
 6. Scope Discipline: Only do what the user asked. Do not expand the task scope by researching adjacent topics, generating unrequested variations, or adding unsolicited deliverables.
+7. No Visual Feedback Loops: You CANNOT see the generated images (you only receive a file path). Do NOT generate or regenerate images repeatedly in a loop to try to visually verify, tweak, or adjust the layout. Plan your coordinates mathematically, run the generation tool once, immediately return the best image path to the user, and wait for their feedback.
 </loop_prevention>
 
 <realtime_data_ingestion_guards>
@@ -892,11 +918,22 @@ async def get_marketing_agent(session: ClientSession, session_id: str = "default
         generate_pdf_in_sandbox
     ] + lc_mcp_tools
     
+    import shutil
+    # Copy skills folder to the ephemeral workspace directory so SkillsMiddleware can load them via the backend
+    src_skills = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "skills")
+    dst_skills = os.path.join(workspace_dir, "skills")
+    if os.path.exists(src_skills):
+        shutil.copytree(src_skills, dst_skills, dirs_exist_ok=True)
+        logger.info(f"Copied agent skills from {src_skills} to {dst_skills}")
+    else:
+        logger.warning(f"Skills source folder not found at {src_skills}")
+
     raw_agent = create_deep_agent(
         model=agent_llm,
         tools=all_tools,
         backend=backend,
-        system_prompt=SYSTEM_PROMPT
+        system_prompt=SYSTEM_PROMPT,
+        skills=["/workspace/skills"]
     )
     _cached_agent = AgentSessionProxy(raw_agent)
     _cached_agent.session = session

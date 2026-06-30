@@ -282,11 +282,11 @@ def test_context_window_optimizations():
         
     eviction_messages.append(large_human_msg) # last message is kept
     
-    # Mock _estimate_tokens to return a value larger than 28000 when history is long
+    # Mock _estimate_tokens to return a value larger than 32000 when history is long
     def mock_estimate(msgs, tools=None):
         # If there are more than 5 messages in the history, simulate token overload
         if len(msgs) > 5:
-            return 30000
+            return 35000
         return 15000
         
     with patch.object(llm, "_estimate_tokens", side_effect=mock_estimate):
@@ -356,12 +356,12 @@ def test_composition_validators():
     from pydantic import ValidationError
 
     # Valid text element
-    elem_text_ok = CompositionElement(type="text", bbox=[100, 200, 220, 800], desc="Title text", text="Welcome")
+    elem_text_ok = CompositionElement(type="text", bbox=[100, 200, 180, 800], desc="Title text", text="Welcome")
     assert elem_text_ok.text == "Welcome"
 
     # Missing text for type="text"
     with pytest.raises(ValidationError) as excinfo:
-        CompositionElement(type="text", bbox=[100, 200, 220, 800], desc="Title text")
+        CompositionElement(type="text", bbox=[100, 200, 180, 800], desc="Title text")
     assert "The 'text' field is mandatory" in str(excinfo.value)
 
     # Valid 0-1000 scale bbox
@@ -400,9 +400,20 @@ def test_composition_validators():
             type="text",
             bbox=[300, 100, 700, 900],  # height = 400
             desc="Header text",
-            text="Tired of bitter\ngrocery store coffee?"  # 2 lines, max allowed height is 300
+            text="Tired of bitter\ngrocery store coffee?"  # 2 lines, max allowed height is 200
         )
     assert "too tall" in str(excinfo.value)
+
+    # Invalid overlapping bounding boxes between text and object
+    with pytest.raises(ValidationError) as excinfo:
+        CompositionalDeconstruction(
+            background="coffee cup shop",
+            elements=[
+                CompositionElement(type="obj", bbox=[200, 300, 800, 800], desc="Blurred generic crumpled paper coffee cup"),
+                CompositionElement(type="text", bbox=[300, 150, 380, 500], desc="Barista quality coffee", text="Coffee")
+            ]
+        )
+    assert "Overlap/Intersection detected" in str(excinfo.value)
 
     # Invalid spelling typo (distance = 1 anomaly against user prompt words)
     from app.agent.orchestrator import active_user_words
@@ -411,7 +422,7 @@ def test_composition_validators():
         with pytest.raises(ValidationError) as excinfo:
             CompositionElement(
                 type="text",
-                bbox=[100, 150, 220, 850],
+                bbox=[100, 150, 180, 850],
                 desc="Header text",
                 text="Tired of biter gocery store cofee?"
             )

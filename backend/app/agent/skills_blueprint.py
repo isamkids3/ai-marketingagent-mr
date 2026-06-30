@@ -258,6 +258,9 @@ class VisualLayoutStructuringSkill:
         return """<visual_layout_structuring_rules>
 ### VISUAL COMPOSITION & LAYOUT STRUCTURING
 Follow these guidelines to coordinate complex visual ad canvas elements:
+- **Token-Budget Optimization (BBox & Element Limits)**: To prevent JSON truncation and LLM output token limit errors, you MUST:
+  - **Limit Elements Count**: Limit the visual layout to a maximum of 6 elements per image (especially for infographics or split-screens).
+  - **Concise Descriptions**: Keep each element's description concise and strictly under 40 words. Do not use overly descriptive micro-prose. This forces compact JSON output and avoids truncation failures.
 1. **Normalized Coordinates**: Every entry in the elements list (both 'text' and 'obj' types, including icons, backgrounds, characters, and graphics) MUST have defined bounding box coordinates in `[y1, x1, y2, x2]` (0-1000 scale, top-left origin).
    - The canvas is a virtual 1000x1000 grid. `y1` is top, `x1` is left, `y2` is bottom, `x2` is right.
    - Height of element is `y2 - y1`. Width is `x2 - x1`.
@@ -265,22 +268,26 @@ Follow these guidelines to coordinate complex visual ad canvas elements:
 3. **Background Isolation**: Distinctly define the background prompt separate from physical elements. Never blend backgrounds with overlapping subject instructions.
 4. **Negative Space Alignment & Canvas Segmentation**: Segment the canvas into column/row regions (e.g., Top strip `[0, 100, 200, 900]`, Bottom CTA `[800, 200, 950, 800]`, Center `[200, 150, 750, 850]`). When text overlays are requested, position the bounding box in negative space (e.g., in a clean upper corner or side panel) to prevent blocking the focal subject.
 5. **No Overlaps**: Calculate coordinates mathematically to ensure bounding boxes of primary subjects and text overlay boxes do not intersect.
-   - *Example deconstruction*: A complex minimalist film poster (`Flow` by Gints Zilbalodis) with a stylized black cat at the bottom, title centered, credits block top-right:
-     - Credits Block: `[18, 725, 319, 936]` (Tight corner placement)
-     - TIFF Laurels: `[334, 46, 387, 120]`
-     - Golden Globe Winner: `[531, 746, 638, 919]`
-     - Title "Flow": `[503, 102, 608, 497]`
-     - Black Cat Subject: `[611, 4, 956, 967]` (Spans the bottom of the canvas, overlapping no other elements).
+    - **Isolate Text Coordinates & Coordinate Segmentation**: Bounding boxes for text overlays must be strictly separated from backdrop/container objects and foreground focal objects (such as buttons, badges, banners, boxes, products, characters, or containers) so they do not overlap. Keeping their bounding box definitions physically separate prevents overlapping pixel conflicts entirely. If text is meant to be placed 'on' or 'inside' a shape, do NOT overlap their bounding boxes; instead, allocate a separate, smaller bounding box for the text that sits entirely inside the container box with clean margins. Text and object bounding boxes must never intersect, or they will compete/fight for the same pixels, causing spelling glitches and rendering artifacts.
+    - *Example deconstruction*: A complex minimalist film poster (`Flow` by Gints Zilbalodis) with a stylized black cat at the bottom, title centered, credits block top-right:
+      - Credits Block: `[18, 725, 319, 936]` (Tight corner placement)
+      - TIFF Laurels: `[334, 46, 387, 120]`
+      - Golden Globe Winner: `[531, 746, 638, 919]`
+      - Title "Flow": `[503, 102, 608, 497]`
+      - Black Cat Subject: `[611, 4, 956, 967]` (Spans the bottom of the canvas, overlapping no other elements).
 6. **Ideogram 4.0 Text Fidelity Constraints**:
    - Translate all conceptual text layouts into double-quoted literal strings.
    - Break down every bullet point, tagline, and paragraph into its own individual text element in the elements list with its own unique coordinates. Never combine them.
    - Strip all alternative listings ("or similar", "such as", "various", "e.g."). Pick one configuration.
    - **Explicit Line Breaks**: Always use explicit `\\n` line breaks in the `text` field at natural word boundaries instead of relying on auto-wrap.
-   - **Proportional BBox Height**: Bounding boxes for text elements MUST have a tight height proportional to the number of lines. Allocate a maximum of **150 units of height per line of text** (on the 0-1000 scale). For example, a 1-line text box should have a height (y2 - y1) of at most 150 (typically 80-120), and a 2-line text box should have a height of at most 300. NEVER allocate excessive vertical space (e.g., 400 height for 2 lines), as it forces the generator to duplicate lines or stretch text vertically to fill the empty space.
-   - **Preventing Corner Gibberish (Hallucinated Placeholders)**: To stop the renderer from generating random placeholder text in the corners (like 'IAhghert' or 'Miajestarie'), you MUST:
-     - By default, always append this exact sentence to the `high_level_description` or `background` description to force the corners and margins to remain completely clean: `"A clean, minimal composition with absolutely no other text, logos, branding placeholders, watermarks, or social media icons outside of the explicitly defined elements."`
-     - Only include branding text elements (such as brand names, logo text, or website URLs) in the `elements` list if the user explicitly provided or requested them. Never automatically invent or inject fake branding placeholders.
-     - **Exhaustive Diagram & Infographic Layouts**: If the prompt describes a flowchart, process, or multi-step diagram (e.g., "RAG architecture", "3-step pipeline"), you MUST explicitly define every single step, connector/arrow, icon, container shape, and label as a separate element in the `elements` list with its own bounding box. Leaving parts of a diagram undefined in the JSON forces the model to hallucinate details to fill the blank space, which causes spelling typos and misaligned graphics.
+   - **Proportional BBox Height (Dynamic Height Calculation)**: Bounding boxes for text elements MUST have a tight height calculated dynamically based on line count. For a 1:1 canvas, allocate **70 to 80 units of height per line of text** (up to a maximum of 100 units). For example, a 1-line text box should have a height of 70 to 100, a 2-line text box should have a height of 140 to 200, and a 3-line text box should strictly have a maximum vertical span of 210 to 240 units (up to 300 maximum). NEVER allocate excessive height (e.g., 400 height for 2 or 3 lines), as this forces the generator to duplicate lines or invent random text (like "Ever croy") to fill the empty space.
+   - **Preventing Corner Gibberish (Hallucinated Placeholders)**: To stop the renderer from generating random placeholder text in the corners (like 'IAhghert', 'Placydar', or '##17'), you MUST:
+      - **Avoid Layout & Structural Buzzwords**: Generic layout and structural terms—such as "advertisement", "social media ad", "ad banner", "infographic", "flowchart", "process diagram", "comparison chart", "presentation slide", or "dashboard"—trigger strong pre-trained template priors. Do NOT use these structural buzzwords unless the user explicitly requested that specific format. If a structural format IS requested, you MUST follow the Exhaustive Diagram & Infographic Layouts rule below. Otherwise, describe the style using neutral media types, such as: "cinematic lifestyle photograph", "clean studio product shot", "minimalist flat graphic design", or "studio portrait".
+      - **Use Positive Negation (Clean Corners & Margins)**: Do NOT use negative words (e.g., do not say "no logos, no watermarks"). Instead, always append one of these positive descriptions to the background or high-level description:
+        - For photographs/scenic backgrounds: `"The background is a smooth, continuous image extending fully to all four edges of the canvas, with the corners and margins of the frame remaining completely plain, bare, and empty."`
+        - For graphical/infographic overlays: `"A clean, minimalist layout with a vast amount of empty, quiet negative space surrounding the central elements."`
+      - Only include branding text elements (such as brand names, logo text, or website URLs) in the `elements` list if the user explicitly provided or requested them. Never automatically invent or inject fake branding placeholders.
+      - **Exhaustive Diagram & Infographic Layouts**: If the prompt describes a flowchart, process, or multi-step diagram (e.g., "RAG architecture", "3-step pipeline"), you MUST explicitly define every single step, connector/arrow, icon, container shape, and label as a separate element in the `elements` list with its own bounding box. Leaving parts of a diagram undefined in the JSON forces the model to hallucinate details to fill the blank space, which causes spelling typos and misaligned graphics.
 </visual_layout_structuring_rules>"""
 
     @staticmethod

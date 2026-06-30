@@ -21,9 +21,41 @@ from app.crud.chat import create_message
 from app.schemas.chat import ChatMessageCreate
 # pyrefly: ignore [missing-import]
 from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
+from PIL import Image, ImageOps
+import hashlib
 
 router = APIRouter()
 logger = logging.getLogger("agent_api")
+
+
+def get_file_hash(path: str) -> str:
+    """Calculate SHA256 hash of a file."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def merge_image_and_mask(original_path: str, mask_path: str, output_path: str):
+    """
+    Merge original image and mask image into an RGBA PNG.
+    In the output alpha channel:
+      - Masked (painted) pixels (where mask is white/255) become transparent (alpha = 0).
+      - Unmasked (unpainted) pixels (where mask is black/0) remain opaque (alpha = 255).
+    """
+    orig_img = Image.open(original_path).convert("RGB")
+    mask_img = Image.open(mask_path).convert("L")
+    
+    if mask_img.size != orig_img.size:
+        mask_img = mask_img.resize(orig_img.size, Image.Resampling.BILINEAR)
+        
+    alpha_channel = ImageOps.invert(mask_img)
+    
+    rgba_img = orig_img.copy()
+    rgba_img.putalpha(alpha_channel)
+    rgba_img.save(output_path, "PNG")
+
 
 
 def _sse(event: str, data: Any) -> str:
@@ -87,6 +119,7 @@ async def chat_with_agent(
     tone = None
     image_filename = None
     doc_filename = None
+    is_masked = False
     
     shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
     os.makedirs(shared_root, exist_ok=True)
@@ -106,6 +139,8 @@ async def chat_with_agent(
         os.makedirs(thread_dir, exist_ok=True)
 
         image_file = form.get("image")
+        mask_file = form.get("mask")
+        
         if image_file and hasattr(image_file, "filename") and image_file.filename:
             image_filename = image_file.filename
             image_path = os.path.join(thread_dir, image_filename)
@@ -113,13 +148,40 @@ async def chat_with_agent(
                 shutil.copyfileobj(image_file.file, buffer)
             logger.info(f"Saved uploaded image to {image_path}")
             
-            # Copy to temp workspace dir so local tools can resolve it via /workspace/
+            # Copy base image to temp workspace
             try:
                 temp_image_path = os.path.join(temp_workspace, image_filename)
                 shutil.copy2(image_path, temp_image_path)
                 logger.info(f"Copied uploaded image to temp workspace: {temp_image_path}")
             except Exception as e:
                 logger.warning(f"Could not copy image to temp workspace: {e}")
+                
+            # If mask is also uploaded, save and merge
+            if mask_file and hasattr(mask_file, "filename") and mask_file.filename:
+                mask_filename = mask_file.filename
+                mask_path = os.path.join(thread_dir, f"mask_{mask_filename}")
+                with open(mask_path, "wb") as buffer:
+                    shutil.copyfileobj(mask_file.file, buffer)
+                logger.info(f"Saved uploaded mask to {mask_path}")
+                
+                # Merge original image and mask image into an RGBA PNG
+                merged_filename = f"masked_{os.path.splitext(image_filename)[0]}.png"
+                merged_path = os.path.join(thread_dir, merged_filename)
+                try:
+                    merge_image_and_mask(image_path, mask_path, merged_path)
+                    logger.info(f"Successfully merged image and mask to {merged_path}")
+                    
+                    # Switch to using merged image
+                    image_filename = merged_filename
+                    image_path = merged_path
+                    is_masked = True
+                    
+                    # Copy merged image to temp workspace
+                    temp_image_path = os.path.join(temp_workspace, image_filename)
+                    shutil.copy2(image_path, temp_image_path)
+                    logger.info(f"Copied merged image to temp workspace: {temp_image_path}")
+                except Exception as merge_err:
+                    logger.error(f"Failed to merge image and mask: {merge_err}")
             
         doc_file = form.get("document")
         if doc_file and hasattr(doc_file, "filename") and doc_file.filename:
@@ -150,11 +212,14 @@ async def chat_with_agent(
         session_id = uuid.UUID(session_id_str)
     except ValueError:
         return {"error": "Invalid session_id UUID format"}
- 
+  
     # Formulate custom prompt explaining file locations to the agent if they were uploaded
     custom_prompt = prompt
     if image_filename:
-        custom_prompt = f"[Uploaded Reference Image: /sandbox/{session_id_str}/{image_filename}]\n" + custom_prompt
+        if is_masked:
+            custom_prompt = f"[Uploaded Masked Image: /sandbox/{session_id_str}/{image_filename}]\n" + custom_prompt
+        else:
+            custom_prompt = f"[Uploaded Reference Image: /sandbox/{session_id_str}/{image_filename}]\n" + custom_prompt
     if doc_filename:
         custom_prompt = f"[Uploaded Document: /sandbox/{session_id_str}/{doc_filename}]\n" + custom_prompt
 
@@ -364,37 +429,136 @@ async def chat_with_agent(
     )
 
 
+@router.post("/upload/mask")
+async def upload_mask(
+    image: UploadFile = File(...),
+    original_ref: str = Form(...),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    Upload a mask image to be applied to an existing original image.
+    Merges original and mask into an RGBA PNG and uploads to ComfyUI.
+    """
+    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
+    temp_workspace = WorkspaceManager.get_workspace_dir()
+    
+    session_id_str = ""
+    original_filename = ""
+    
+    # Try parsing original_ref as JSON
+    try:
+        ref_data = json.loads(original_ref)
+        if isinstance(ref_data, dict):
+            session_id_str = ref_data.get("session_id", "")
+            original_filename = ref_data.get("filename", "")
+    except Exception:
+        # Fallback to parsing path-like strings
+        if "/" in original_ref:
+            parts = original_ref.strip("/").split("/")
+            if len(parts) >= 2:
+                session_id_str = parts[-2]
+                original_filename = parts[-1]
+                
+    if not session_id_str or not original_filename:
+        # Fallback to extracting just filename if no session_id found
+        original_filename = os.path.basename(original_ref)
+        
+    thread_dir = os.path.join(shared_root, session_id_str)
+    os.makedirs(thread_dir, exist_ok=True)
+    
+    original_path = os.path.join(thread_dir, original_filename)
+    # If not in thread_dir, check in temp_workspace
+    if not os.path.exists(original_path):
+        original_path = os.path.join(temp_workspace, original_filename)
+        
+    if not os.path.exists(original_path):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail=f"Original image '{original_filename}' not found on server."
+        )
+        
+    # Save the mask image
+    mask_filename = image.filename or f"mask_{uuid.uuid4().hex[:8]}.png"
+    mask_path = os.path.join(thread_dir, f"mask_{mask_filename}")
+    with open(mask_path, "wb") as buffer:
+        shutil.copyfileobj(image.file, buffer)
+        
+    # Merge original image and mask image into an RGBA PNG
+    merged_filename = f"masked_{os.path.splitext(original_filename)[0]}.png"
+    merged_path = os.path.join(thread_dir, merged_filename)
+    
+    try:
+        merge_image_and_mask(original_path, mask_path, merged_path)
+        logger.info(f"Merged mask to {merged_path}")
+        
+        # Copy to temp workspace dir so local tools can resolve it via /workspace/
+        temp_image_path = os.path.join(temp_workspace, merged_filename)
+        shutil.copy2(merged_path, temp_image_path)
+        logger.info(f"Copied merged image to temp workspace: {temp_image_path}")
+    except Exception as e:
+        from fastapi import HTTPException
+        logger.error(f"Failed to merge image and mask: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error merging mask: {str(e)}"
+        )
+        
+    # Calculate hashes for metadata
+    original_hash = get_file_hash(original_path)
+    mask_hash = get_file_hash(mask_path)
+    
+    return {
+        "name": mask_filename,
+        "subfolder": "",
+        "type": "input",
+        "metadata": {
+            "is_mask": True,
+            "original_hash": original_hash,
+            "mask_type": "painted_masked",
+            "related_files": {
+                "mask": mask_hash,
+                "paint": "none",
+                "painted": merged_filename
+            }
+        }
+    }
+
+
 @router.get("/status")
 async def get_service_status() -> Any:
     """Check the health status of Layer 1 dependencies (FastAPI, MCP Server, ComfyUI)."""
+    from urllib.parse import urlparse
     mcp_url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:9000/mcp")
     comfy_url = os.getenv("COMFYUI_URL", "http://localhost:8188")
     
     mcp_status = "offline"
     comfy_status = "offline"
     
-    # Check MCP Server (Streamable HTTP port 9000)
+    # Check MCP Server
     try:
-        port = 9000
-        if "127.0.0.1:" in mcp_url:
-            port = int(mcp_url.split("127.0.0.1:")[1].split("/")[0])
-        elif "localhost:" in mcp_url:
-            port = int(mcp_url.split("localhost:")[1].split("/")[0])
-            
+        parsed_mcp = urlparse(mcp_url)
+        mcp_host = parsed_mcp.hostname or "127.0.0.1"
+        mcp_port = parsed_mcp.port or (443 if parsed_mcp.scheme == "https" else 80)
+        
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(0.2)
-        s.connect(("127.0.0.1", port))
+        s.connect((mcp_host, mcp_port))
         s.close()
         mcp_status = "online"
     except Exception:
         pass
         
-    # Check ComfyUI (HTTP port 8188)
+    # Check ComfyUI
     try:
+        parsed_comfy = urlparse(comfy_url)
+        comfy_host = parsed_comfy.hostname or "localhost"
+        comfy_port = parsed_comfy.port or (443 if parsed_comfy.scheme == "https" else 80)
+        
         # Quick check using socket first to avoid HTTP timeout delay
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(0.2)
-        s.connect(("127.0.0.1", 8188))
+        s.connect((comfy_host, comfy_port))
         s.close()
         comfy_status = "online"
     except Exception:
