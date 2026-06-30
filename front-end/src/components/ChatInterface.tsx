@@ -361,6 +361,55 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                         }`}>
                         {/* Render main text */}
                         {message.content?.text && formatText(message.content.text)}
+
+                        {/* Render uploaded image preview if present */}
+                        {message.meta_data?.image_path && (
+                          <div 
+                            onClick={() => {
+                              if (message.meta_data?.image_path) {
+                                window.open(resolveUrl(message.meta_data.image_path, backendUrl), "_blank");
+                              }
+                            }}
+                            className="mt-3 rounded-xl overflow-hidden border border-slate-800 bg-slate-950/60 shadow-xl max-w-sm cursor-pointer hover:border-indigo-500/50 transition-all duration-300"
+                            title="Click to view full resolution"
+                          >
+                            <img 
+                              src={resolveUrl(message.meta_data.image_path || "", backendUrl)} 
+                              alt="Uploaded visual reference" 
+                              className="w-full h-auto object-cover max-h-[200px]" 
+                              onError={(e) => {
+                                (e.target as HTMLElement).style.display = 'none';
+                              }}
+                            />
+                            <div className="p-2 bg-slate-900 border-t border-slate-800 text-[10px] text-slate-400 font-semibold tracking-wide uppercase select-none flex items-center gap-1.5">
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3 text-indigo-400">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Z" />
+                              </svg>
+                              Uploaded Image
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Render uploaded document chip if present */}
+                        {message.meta_data?.doc_path && (
+                          <div 
+                            onClick={() => {
+                              if (message.meta_data?.doc_path) {
+                                window.open(resolveUrl(message.meta_data.doc_path, backendUrl), "_blank");
+                              }
+                            }}
+                            className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-850 bg-slate-950/80 text-xs text-slate-300 hover:border-indigo-500/50 cursor-pointer transition-all max-w-xs"
+                            title="Click to view document"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-indigo-400 shrink-0">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                            </svg>
+                            <span className="font-semibold truncate max-w-[200px] text-[10px] text-slate-300">
+                              {message.meta_data.doc_name || (message.meta_data.doc_path || "").split("/").pop()}
+                            </span>
+                          </div>
+                        )}
+
                         {/* Blinking cursor while streaming */}
                         {message.meta_data?._streaming && (
                           <span className="inline-block w-0.5 h-4 bg-indigo-400 ml-0.5 align-middle animate-[blink_1s_step-end_infinite]" />

@@ -6,6 +6,7 @@ from app.api.deps import get_db, get_current_active_user
 from app.crud.chat import (
     create_message,
     create_session,
+    update_session,
     delete_session,
     get_messages_by_session,
     get_session,
@@ -21,6 +22,28 @@ from app.schemas.chat import (
 )
 
 router = APIRouter()
+
+@router.put("/sessions/{session_id}", response_model=ChatSessionResponse)
+async def rename_chat_session(
+    session_id: uuid.UUID,
+    session_in: ChatSessionCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Update details (like title) of a chat session."""
+    session = await get_session(db, session_id=session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat session not found.",
+        )
+    if session.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions to modify this chat session.",
+        )
+    updated = await update_session(db, session_id=session_id, session_in=session_in)
+    return updated
 
 @router.get("/sessions", response_model=List[ChatSessionResponse])
 async def read_sessions(

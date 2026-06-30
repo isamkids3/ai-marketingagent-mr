@@ -5,6 +5,9 @@ description: Postiz is a tool to schedule social media and chat posts to 28+ cha
 
 # Postiz Social Media Automation Skill
 
+> [!TIP]
+> **MCP Tool Preference:** When interacting with Postiz programmatically, **always prefer using the registered MCP tools** (such as `integrationList` and `schedulePostTool`) instead of running CLI commands. Use the CLI documentation below as a structural reference for platform-specific settings, comment threading structures, and media upload conventions.
+
 Postiz is a social media automation CLI for scheduling posts across 28+ platforms.
 
 ## ⚠️ Two Hard Rules (Read First)

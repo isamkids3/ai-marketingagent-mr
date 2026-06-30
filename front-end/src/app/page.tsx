@@ -254,6 +254,26 @@ export default function Home() {
     }
   };
 
+  const handleRenameSession = async (id: string, newTitle: string) => {
+    if (!token) return;
+    try {
+      const resp = await fetch(`${backendUrl}/api/v1/chat/sessions/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ title: newTitle }),
+      });
+      if (resp.ok) {
+        const updated = await resp.json();
+        setSessions(prev => prev.map(s => s.id === id ? updated : s));
+      }
+    } catch (err) {
+      setAppError("Error renaming session.");
+    }
+  };
+
   const handleCancelResponse = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -307,6 +327,11 @@ export default function Home() {
       role: "user",
       content: { text },
       created_at: new Date().toISOString(),
+      meta_data: {
+        image_path: image ? URL.createObjectURL(image) : undefined,
+        doc_path: document ? URL.createObjectURL(document) : undefined,
+        doc_name: document ? document.name : undefined,
+      }
     };
     setMessages(prev => [...prev, tempUserMsg]);
     setIsLoading(true);
@@ -644,6 +669,7 @@ export default function Home() {
         onSelectSession={setCurrentSessionId}
         onCreateSession={handleCreateSession}
         onDeleteSession={handleDeleteSession}
+        onRenameSession={handleRenameSession}
         tone={tone}
         onChangeTone={setTone}
         backendUrl={backendUrl}

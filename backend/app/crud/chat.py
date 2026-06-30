@@ -42,6 +42,22 @@ async def create_session(
     await db.refresh(db_session)
     return db_session
 
+async def update_session(
+    db: AsyncSession, session_id: uuid.UUID, session_in: ChatSessionCreate
+) -> Optional[ChatSession]:
+    """Update a chat session's attributes (e.g. title)."""
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    db_session = result.scalar_one_or_none()
+    if db_session:
+        if session_in.title is not None:
+            db_session.title = session_in.title
+        db_session.updated_at = datetime.now(timezone.utc)
+        db.add(db_session)
+        await db.commit()
+        await db.refresh(db_session)
+        return db_session
+    return None
+
 async def delete_session(db: AsyncSession, session_id: uuid.UUID) -> bool:
     """Delete a chat session (and cascade-delete messages)."""
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))

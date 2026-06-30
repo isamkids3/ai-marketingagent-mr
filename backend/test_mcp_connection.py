@@ -7,7 +7,7 @@ load_dotenv()
 
 from app.agent.orchestrator import connect_to_all_mcp_servers
 
-async def test_connection():
+async def run_connection_test():
     print("=" * 60)
     print("Testing MCP Servers Connections...")
     print("=" * 60)
@@ -60,4 +60,4 @@ async def test_connection():
     print("=" * 60)
 
 if __name__ == "__main__":
-    asyncio.run(test_connection())
+    asyncio.run(run_connection_test())
