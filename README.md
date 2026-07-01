@@ -357,6 +357,7 @@ python3 test_workflow_execution.py --workflow text-image --prompt "A beautiful d
 * **Execute full Image-to-Image pipeline:**
 ```bash
 python3 test_workflow_execution.py --workflow image-image --prompt "Make the image look like an oil painting" --image /path/to/local/source.png
+```
 
 ---
 
@@ -380,4 +381,3 @@ The platform integrates directly with **Postiz** using the Model Context Protoco
   4. In your `.env` file, set `CLOUDFLARE_BUCKET_URL="https://pub-xxxxxx.r2.dev"` (your public R2 subdomain) and set `CLOUDFLARE_REGION="auto"`.
   5. **Auto-Delete Spending Protection**: Under your Cloudflare bucket settings -> **Object Lifecycle Rules**, add a rule to automatically delete objects after **7 days**. This keeps your storage usage near 0 MB, guaranteeing you never exceed the 10 GB free tier.
 
-```
