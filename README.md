@@ -356,4 +356,27 @@ python3 test_workflow_execution.py --workflow text-image --prompt "A beautiful d
 * **Execute full Image-to-Image pipeline:**
 ```bash
 python3 test_workflow_execution.py --workflow image-image --prompt "Make the image look like an oil painting" --image /path/to/local/source.png
+
+---
+
+## 8. Postiz Social Media Integration & Troubleshooting
+
+The platform integrates directly with **Postiz** using the Model Context Protocol (MCP) to schedule, draft, and publish generated campaign assets across 28+ channels (X/Twitter, LinkedIn, Instagram, Threads, Discord, etc.).
+
+### Architecture & Connection
+* **Multi-Session Client Connection**: The FastAPI backend orchestrator (`app/agent/orchestrator.py`) concurrently connects to the ComfyUI MCP server (stdio) and the Postiz MCP server (streamable HTTP SSE transport).
+* **Environment Variables**: Managed via `/postiz-docker-compose/.env`.
+* **Agent Integration**: The agent dynamically parses the available social posting tools (e.g. `integrationList`, `schedulePostTool`, `generateImageTool`) and uses native system prompts to coordinate scheduling.
+### Key Hurdles & Solutions
+
+#### Instagram / Meta "Media Fetch Failed" & Storage Resolution
+* **The Hurdle**: Meta's Graph APIs publish images by sending a request to "pull" the image file from a public URL. Since Postiz runs locally on a private network (`http://localhost:4007`), Meta's servers cannot reach it, causing a `Media fetch failed` error.
+* **R2 Host Constraints**: Postiz's R2 storage client hardcodes the S3 endpoint to Cloudflare R2's domain (`<id>.r2.cloudflarestorage.com`). This makes it impossible to use non-Cloudflare S3 providers (like Backblaze B2) without triggering SSL handshake errors.
+* **The Solution (Cloudflare R2 Configuration)**:
+  1. Enable Cloudflare R2 on your account (requires a valid card/Apple Pay on file, but stays free under 10 GB/month).
+  2. Update your `docker-compose.yaml` file to map `STORAGE_PROVIDER="cloudflare"` and the associated `CLOUDFLARE_` environment variables.
+  3. In your Cloudflare bucket settings, **enable the public r2.dev subdomain** (or connect a custom domain) to get a public `https` URL.
+  4. In your `.env` file, set `CLOUDFLARE_BUCKET_URL="https://pub-xxxxxx.r2.dev"` (your public R2 subdomain) and set `CLOUDFLARE_REGION="auto"`.
+  5. **Auto-Delete Spending Protection**: Under your Cloudflare bucket settings -> **Object Lifecycle Rules**, add a rule to automatically delete objects after **7 days**. This keeps your storage usage near 0 MB, guaranteeing you never exceed the 10 GB free tier.
+
 ```
