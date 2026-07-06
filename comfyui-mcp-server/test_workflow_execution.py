@@ -11,6 +11,27 @@ import requests
 # Add current directory to path just in case
 sys.path.append(str(Path(__file__).parent.resolve()))
 
+def load_dotenv():
+    """Load environment variables from a local .env file if it exists."""
+    dotenv_path = Path(__file__).parent / ".env"
+    if dotenv_path.exists():
+        try:
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        val = val.strip().strip("'\"")
+                        if key:
+                            os.environ[key] = val
+        except Exception as e:
+            print(f"Warning: Failed to load .env file: {e}")
+
+load_dotenv()
+
 try:
     from comfyui_client import ComfyUIClient
     from managers.workflow_manager import WorkflowManager
@@ -63,8 +84,8 @@ def main():
     parser.add_argument(
         "-u", "--url",
         type=str,
-        default=os.getenv("COMFYUI_URL", "http://192.168.5.184:8188"),
-        help="ComfyUI API URL (default: http://192.168.5.184:8188, or COMFYUI_URL env var if set)"
+        default=os.getenv("COMFYUI_URL", "http://localhost:8188"),
+        help="ComfyUI API URL (default: http://localhost:8188, or COMFYUI_URL env var if set)"
     )
     parser.add_argument(
         "-o", "--output",

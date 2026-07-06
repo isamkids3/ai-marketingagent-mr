@@ -284,6 +284,7 @@ export default function Home() {
   const handleSendMessage = async (
     text: string,
     image: File | null,
+    image2: File | null,
     document: File | null,
     mask: File | null
   ) => {
@@ -329,6 +330,7 @@ export default function Home() {
       created_at: new Date().toISOString(),
       meta_data: {
         image_path: image ? URL.createObjectURL(image) : undefined,
+        image2_path: image2 ? URL.createObjectURL(image2) : undefined,
         doc_path: document ? URL.createObjectURL(document) : undefined,
         doc_name: document ? document.name : undefined,
       }
@@ -346,6 +348,7 @@ export default function Home() {
     formData.append("session_id", targetSessionId as string);
     formData.append("tone", tone);
     if (image) formData.append("image", image);
+    if (image2) formData.append("image2", image2);
     if (document) formData.append("document", document);
     if (mask) formData.append("mask", mask);
 

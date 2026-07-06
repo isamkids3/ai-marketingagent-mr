@@ -5,6 +5,7 @@ interface InputAreaProps {
   onSendMessage: (
     text: string,
     image: File | null,
+    image2: File | null,
     document: File | null,
     mask: File | null
   ) => void;
@@ -20,6 +21,8 @@ export const InputArea: React.FC<InputAreaProps> = ({
   const [text, setText] = useState("");
   const [stagedImage, setStagedImage] = useState<File | null>(null);
   const [stagedImagePreview, setStagedImagePreview] = useState<string | null>(null);
+  const [stagedImage2, setStagedImage2] = useState<File | null>(null);
+  const [stagedImage2Preview, setStagedImage2Preview] = useState<string | null>(null);
   const [stagedDocument, setStagedDocument] = useState<File | null>(null);
   const [stagedMask, setStagedMask] = useState<File | null>(null);
   
@@ -53,22 +56,39 @@ export const InputArea: React.FC<InputAreaProps> = ({
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      stageImageFile(file);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      if (files.length === 1) {
+        if (!stagedImage) {
+          stageImageFile(files[0], 1);
+        } else if (!stagedImage2) {
+          stageImageFile(files[0], 2);
+        } else {
+          stageImageFile(files[0], 1);
+        }
+      } else {
+        stageImageFile(files[0], 1);
+        stageImageFile(files[1], 2);
+      }
       clearStagedMask();
+      if (imageInputRef.current) imageInputRef.current.value = "";
     }
   };
 
-  const stageImageFile = (file: File) => {
+  const stageImageFile = (file: File, slot: 1 | 2 = 1) => {
     if (!file.type.startsWith("image/")) {
       alert("Please upload an image file (png, jpg, jpeg).");
       return;
     }
-    setStagedImage(file);
     const reader = new FileReader();
     reader.onloadend = () => {
-      setStagedImagePreview(reader.result as string);
+      if (slot === 1) {
+        setStagedImage(file);
+        setStagedImagePreview(reader.result as string);
+      } else {
+        setStagedImage2(file);
+        setStagedImage2Preview(reader.result as string);
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -133,6 +153,12 @@ export const InputArea: React.FC<InputAreaProps> = ({
     if (imageInputRef.current) imageInputRef.current.value = "";
   };
 
+  const clearStagedImage2 = () => {
+    setStagedImage2(null);
+    setStagedImage2Preview(null);
+    if (imageInputRef.current) imageInputRef.current.value = "";
+  };
+
   const clearStagedMask = () => {
     setStagedMask(null);
     if (maskBaseInputRef.current) maskBaseInputRef.current.value = "";
@@ -157,27 +183,39 @@ export const InputArea: React.FC<InputAreaProps> = ({
     setIsDragOver(false);
     const files = Array.from(e.dataTransfer.files);
 
-    // Find first image and first document
-    const imageFile = files.find((f) => f.type.startsWith("image/"));
+    // Find all images and first document
+    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
     const docFile = files.find((f) => {
       const ext = f.name.split(".").pop()?.toLowerCase();
       return ext === "pdf" || ext === "txt" || ext === "docx";
     });
 
-    if (imageFile) {
-      stageImageFile(imageFile);
+    if (imageFiles.length > 0) {
+      if (imageFiles.length === 1) {
+        if (!stagedImage) {
+          stageImageFile(imageFiles[0], 1);
+        } else if (!stagedImage2) {
+          stageImageFile(imageFiles[0], 2);
+        } else {
+          stageImageFile(imageFiles[0], 1);
+        }
+      } else {
+        stageImageFile(imageFiles[0], 1);
+        stageImageFile(imageFiles[1], 2);
+      }
       clearStagedMask();
     }
     if (docFile) stageDocFile(docFile);
   };
 
   const handleSubmit = () => {
-    if (!text.trim() && !stagedImage && !stagedDocument) return;
+    if (!text.trim() && !stagedImage && !stagedImage2 && !stagedDocument) return;
     if (isLoading) return;
 
-    onSendMessage(text, stagedImage, stagedDocument, stagedMask);
+    onSendMessage(text, stagedImage, stagedImage2, stagedDocument, stagedMask);
     setText("");
     clearStagedImage();
+    clearStagedImage2();
     clearStagedDocument();
 
     if (textareaRef.current) {
@@ -208,6 +246,7 @@ export const InputArea: React.FC<InputAreaProps> = ({
           ref={imageInputRef}
           onChange={handleImageChange}
           accept="image/*"
+          multiple
           className="hidden"
         />
         <input
@@ -226,14 +265,14 @@ export const InputArea: React.FC<InputAreaProps> = ({
         />
 
         {/* Thumbnail Previews Section */}
-        {(stagedImagePreview || stagedDocument) && (
+        {(stagedImagePreview || stagedImage2Preview || stagedDocument) && (
           <div className="flex flex-wrap items-center gap-3 p-4 border-b border-slate-800/80 bg-slate-950/40 rounded-t-2xl">
-            {/* Image Preview */}
+            {/* Image 1 Preview */}
             {stagedImagePreview && (
               <div className="relative group w-16 h-16 rounded-lg overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center">
                 <img
                   src={stagedImagePreview}
-                  alt="Staged reference"
+                  alt="Staged reference 1"
                   className="w-full h-full object-cover"
                 />
                 {stagedMask && (
@@ -243,9 +282,35 @@ export const InputArea: React.FC<InputAreaProps> = ({
                     </span>
                   </div>
                 )}
+                <div className="absolute bottom-1 left-1 bg-slate-950/80 text-slate-300 text-[8px] font-bold px-1.5 py-0.5 rounded border border-slate-800 leading-none">
+                  Ref 1
+                </div>
                 <button
                   type="button"
                   onClick={clearStagedImage}
+                  className="absolute top-1 right-1 bg-slate-950/80 text-slate-400 hover:text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-all border border-slate-800"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {/* Image 2 Preview */}
+            {stagedImage2Preview && (
+              <div className="relative group w-16 h-16 rounded-lg overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center">
+                <img
+                  src={stagedImage2Preview}
+                  alt="Staged reference 2"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute bottom-1 left-1 bg-slate-950/80 text-slate-300 text-[8px] font-bold px-1.5 py-0.5 rounded border border-slate-800 leading-none">
+                  Ref 2
+                </div>
+                <button
+                  type="button"
+                  onClick={clearStagedImage2}
                   className="absolute top-1 right-1 bg-slate-950/80 text-slate-400 hover:text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-all border border-slate-800"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3">
@@ -351,7 +416,7 @@ export const InputArea: React.FC<InputAreaProps> = ({
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={!text.trim() && !stagedImage && !stagedDocument}
+              disabled={!text.trim() && !stagedImage && !stagedImage2 && !stagedDocument}
               className="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/10 hover:shadow-indigo-600/20 transition-all cursor-pointer disabled:opacity-30 disabled:hover:bg-indigo-600 disabled:cursor-not-allowed mb-0.5 mr-0.5"
               title="Send message"
             >

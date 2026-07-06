@@ -229,3 +229,81 @@ async def test_agent_chat_history_loading(client: AsyncClient):
          assert called_messages[2].name == "some_tool"
          assert called_messages[2].tool_call_id == "call_xyz123"
          assert called_messages[3].content == "hello second message"
+
+
+@pytest.mark.asyncio
+async def test_multi_image_upload(client: AsyncClient):
+    # 1. Register and login
+    user_email = "multi-image@example.com"
+    user_password = "securepassword123"
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": user_email, "password": user_password}
+    )
+    login_response = await client.post(
+        "/api/v1/auth/login",
+        data={"username": user_email, "password": user_password}
+    )
+    token = login_response.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # 2. Create a session
+    session_response = await client.post(
+        "/api/v1/chat/sessions",
+        json={"title": "Test Multi-Image Session"},
+        headers=headers
+    )
+    session_id = session_response.json()["id"]
+    
+    # 3. Call /api/v1/agent/chat via multipart form data with image and image2
+    from unittest.mock import patch, AsyncMock
+    mock_agent = AsyncMock()
+    calls = []
+    async def mock_astream_events(inputs, **kwargs):
+        calls.append((inputs, kwargs))
+        yield {"event": "on_chain_end", "data": {"output": {"messages": []}}}
+    mock_agent.astream_events = mock_astream_events
+    
+    with patch("app.api.v1.endpoints.agent.get_marketing_agent", return_value=mock_agent) as mock_get_agent, \
+         patch("app.api.v1.endpoints.agent.connect_to_mcp_server") as mock_connect, \
+         patch("app.api.v1.endpoints.agent.ClientSession") as mock_client_session:
+         
+         # Mock ClientSession context manager
+         mock_session_instance = AsyncMock()
+         mock_session_instance.initialize = AsyncMock()
+         mock_client_session.return_value.__aenter__.return_value = mock_session_instance
+         
+         # Mock connect_to_mcp_server to return mock connection streams
+         mock_connect.return_value.__aenter__.return_value = (AsyncMock(), AsyncMock())
+         
+         # Prepare dummy files
+         files = {
+             "image": ("ref1.png", b"dummy_bytes_1", "image/png"),
+             "image2": ("ref2.png", b"dummy_bytes_2", "image/png"),
+         }
+         data = {
+             "prompt": "generate image based on these reference images",
+             "session_id": session_id,
+             "tone": "professional",
+         }
+         
+         chat_response = await client.post(
+             "/api/v1/agent/chat",
+             data=data,
+             files=files,
+             headers=headers
+         )
+         
+         assert chat_response.status_code == 200
+         mock_get_agent.assert_called_once()
+         
+         # Check the prompt content received by the agent
+         assert len(calls) == 1
+         called_inputs = calls[0][0]
+         called_messages = called_inputs["messages"]
+         
+         # The last message is the user prompt, which should have the custom prompt format with both images
+         user_msg = called_messages[-1]
+         assert f"[Uploaded Reference Image 1: /sandbox/{session_id}/ref1.png]" in user_msg.content
+         assert f"[Uploaded Reference Image 2: /sandbox/{session_id}/ref2.png]" in user_msg.content
+         assert "generate image based on these reference images" in user_msg.content

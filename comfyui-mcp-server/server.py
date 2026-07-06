@@ -31,6 +31,30 @@ from async_comfyui_client import AsyncComfyUIClient
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MCP_Server")
 
+
+def load_dotenv():
+    """Load environment variables from a local .env file if it exists."""
+    dotenv_path = Path(__file__).parent / ".env"
+    if dotenv_path.exists():
+        try:
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        val = val.strip().strip("'\"")
+                        if key:
+                            os.environ[key] = val
+        except Exception as e:
+            logger.warning(f"Failed to load .env file: {e}")
+
+
+# Load environment variables
+load_dotenv()
+
 # Configuration paths
 WORKFLOW_DIR = Path(os.getenv("COMFY_MCP_WORKFLOW_DIR", str(Path(__file__).parent / "workflows")))
 
@@ -38,7 +62,7 @@ WORKFLOW_DIR = Path(os.getenv("COMFY_MCP_WORKFLOW_DIR", str(Path(__file__).paren
 ASSET_TTL_HOURS = int(os.getenv("COMFY_MCP_ASSET_TTL_HOURS", "24"))
 
 # ComfyUI connection configuration
-COMFYUI_URL = os.getenv("COMFYUI_URL", "http://192.168.5.184:8188")
+COMFYUI_URL = os.getenv("COMFYUI_URL", "http://localhost:8188")
 COMFYUI_MAX_RETRIES = 5  # Number of retry attempts
 COMFYUI_INITIAL_DELAY = 2  # Initial delay in seconds
 COMFYUI_MAX_DELAY = 16  # Maximum delay in seconds

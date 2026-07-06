@@ -6,9 +6,53 @@ import os
 from app.api.v1.router import api_router
 from app.core.config import settings
 
+from contextlib import asynccontextmanager
+import subprocess
+import time
+
+ngrok_process = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global ngrok_process
+    import urllib.request
+    
+    # Check if ngrok is already running on port 4040
+    is_running = False
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=0.2) as response:
+            is_running = True
+    except Exception:
+        pass
+        
+    if not is_running:
+        try:
+            ngrok_bin = "ngrok"
+            if os.path.exists("/opt/homebrew/bin/ngrok"):
+                ngrok_bin = "/opt/homebrew/bin/ngrok"
+            
+            ngrok_process = subprocess.Popen(
+                [ngrok_bin, "http", "8000", "--log=stdout"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            print("Started ngrok tunnel process in background.")
+            time.sleep(1.0)
+        except Exception as e:
+            import logging
+            logging.warning(f"Failed to start ngrok automatically: {e}")
+            
+    yield
+    
+    if ngrok_process:
+        print("Stopping ngrok tunnel process...")
+        ngrok_process.terminate()
+        ngrok_process.wait()
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    lifespan=lifespan,
 )
 
 # Set all CORS enabled origins

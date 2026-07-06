@@ -375,7 +375,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                           >
                             <img 
                               src={resolveUrl(message.meta_data.image_path || "", backendUrl)} 
-                              alt="Uploaded visual reference" 
+                              alt="Uploaded visual reference 1" 
                               className="w-full h-auto object-cover max-h-[200px]" 
                               onError={(e) => {
                                 (e.target as HTMLElement).style.display = 'none';
@@ -385,7 +385,35 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3 text-indigo-400">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Z" />
                               </svg>
-                              Uploaded Image
+                              Uploaded Image 1
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Render uploaded image 2 preview if present */}
+                        {message.meta_data?.image2_path && (
+                          <div 
+                            onClick={() => {
+                              if (message.meta_data?.image2_path) {
+                                window.open(resolveUrl(message.meta_data.image2_path, backendUrl), "_blank");
+                              }
+                            }}
+                            className="mt-3 rounded-xl overflow-hidden border border-slate-800 bg-slate-950/60 shadow-xl max-w-sm cursor-pointer hover:border-indigo-500/50 transition-all duration-300"
+                            title="Click to view full resolution"
+                          >
+                            <img 
+                              src={resolveUrl(message.meta_data.image2_path || "", backendUrl)} 
+                              alt="Uploaded visual reference 2" 
+                              className="w-full h-auto object-cover max-h-[200px]" 
+                              onError={(e) => {
+                                (e.target as HTMLElement).style.display = 'none';
+                              }}
+                            />
+                            <div className="p-2 bg-slate-900 border-t border-slate-800 text-[10px] text-slate-400 font-semibold tracking-wide uppercase select-none flex items-center gap-1.5">
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3 text-indigo-400">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Z" />
+                              </svg>
+                              Uploaded Image 2
                             </div>
                           </div>
                         )}

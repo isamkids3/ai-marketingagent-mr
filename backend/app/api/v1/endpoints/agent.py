@@ -112,6 +112,7 @@ async def chat_with_agent(
     session_id_str = ""
     tone = None
     image_filename = None
+    image2_filename = None
     doc_filename = None
     is_masked = False
     
@@ -133,6 +134,7 @@ async def chat_with_agent(
         os.makedirs(thread_dir, exist_ok=True)
 
         image_file = form.get("image")
+        image2_file = form.get("image2")
         mask_file = form.get("mask")
         
         if image_file and hasattr(image_file, "filename") and image_file.filename:
@@ -176,6 +178,21 @@ async def chat_with_agent(
                     logger.info(f"Copied merged image to temp workspace: {temp_image_path}")
                 except Exception as merge_err:
                     logger.error(f"Failed to merge image and mask: {merge_err}")
+
+        if image2_file and hasattr(image2_file, "filename") and image2_file.filename:
+            image2_filename = image2_file.filename
+            image2_path = os.path.join(thread_dir, image2_filename)
+            with open(image2_path, "wb") as buffer:
+                shutil.copyfileobj(image2_file.file, buffer)
+            logger.info(f"Saved uploaded image2 to {image2_path}")
+            
+            # Copy to temp workspace
+            try:
+                temp_image2_path = os.path.join(temp_workspace, image2_filename)
+                shutil.copy2(image2_path, temp_image2_path)
+                logger.info(f"Copied uploaded image2 to temp workspace: {temp_image2_path}")
+            except Exception as e:
+                logger.warning(f"Could not copy image2 to temp workspace: {e}")
             
         doc_file = form.get("document")
         if doc_file and hasattr(doc_file, "filename") and doc_file.filename:
@@ -209,7 +226,13 @@ async def chat_with_agent(
   
     # Formulate custom prompt explaining file locations to the agent if they were uploaded
     custom_prompt = prompt
-    if image_filename:
+    if image_filename and image2_filename:
+        custom_prompt = (
+            f"[Uploaded Reference Image 1: /sandbox/{session_id_str}/{image_filename}]\n"
+            f"[Uploaded Reference Image 2: /sandbox/{session_id_str}/{image2_filename}]\n"
+            + custom_prompt
+        )
+    elif image_filename:
         if is_masked:
             custom_prompt = f"[Uploaded Masked Image: /sandbox/{session_id_str}/{image_filename}]\n" + custom_prompt
         else:
@@ -223,6 +246,8 @@ async def chat_with_agent(
         meta["tone"] = tone
     if image_filename:
         meta["image_path"] = f"/sandbox/{session_id_str}/{image_filename}"
+    if image2_filename:
+        meta["image2_path"] = f"/sandbox/{session_id_str}/{image2_filename}"
     if doc_filename:
         meta["doc_path"] = f"/sandbox/{session_id_str}/{doc_filename}"
         meta["doc_name"] = doc_filename

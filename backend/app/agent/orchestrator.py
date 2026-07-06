@@ -511,7 +511,21 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
 10. Social Media Integration & Postiz Tools: If the user asks to view connected accounts, check posting requirements, publish, or schedule posts to social media platforms (such as X/Twitter, LinkedIn, Facebook, etc.):
     - First, list connected accounts using `integrationList` to see what channels are connected and their IDs.
     - If needed, check platform-specific limits and posting schemas using `integrationSchema` with the target `platform` name (e.g., "x", "linkedin") to learn the rules (character limits, media requirements).
-    - To draft, schedule, or immediately publish a post, call `schedulePostTool`. Provide the list of target `integrationIds` and the formatted `content` and optional media attachments.
+    - To draft, schedule, or immediately publish a post, call `integrationSchedulePostTool`. The arguments must follow this exact structure:
+      * `socialPost` (array of objects):
+        - `integrationId` (string, REQUIRED): The integration ID of the target channel (singular).
+        - `isPremium` (boolean, REQUIRED): Set to `false` (unless Premium X).
+        - `date` (string, REQUIRED): Publication date in UTC ISO format (e.g. "2026-07-02T12:00:00.000Z").
+        - `shortLink` (boolean, REQUIRED): Set to `false`.
+        - `type` (string, REQUIRED): "schedule", "draft", or "now".
+        - `postsAndComments` (array of objects, REQUIRED):
+          * CRITICAL: Each object inside this array must directly/flatly contain:
+            - `content` (string, REQUIRED): HTML formatted post text (e.g. "<p>Text</p>").
+            - `attachments` (array of strings, REQUIRED): Array of public Postiz/R2 media URLs. If there are no images or attachments, you MUST explicitly provide an empty array: `"attachments": []`.
+          * WARNING: Do NOT nest `content` or `attachments` inside a sub-object key like `"post"` or `"settings"`.
+        - `settings` (array, REQUIRED): If you are not configuring platform-specific settings, you MUST pass this as an empty array: `"settings": []`. Do NOT pass an empty object inside the array (e.g., do NOT write `[{}]`).
+    - **Local File URLs for Postiz Ingestion**: Since Postiz runs inside a Docker container, it cannot resolve local filesystem paths on your host Mac (like `/sandbox/...` or `/Users/adamdali/...`). When passing an image or video URL to Postiz tools (like `uploadFromUrlTool` or the `attachments` array in `integrationSchedulePostTool`), **you MUST convert the local path into an HTTP URL** by prepending the relative sandbox path with `http://host.docker.internal:8000`.
+      *Example*: If the file path is `/sandbox/123/generated.png`, you MUST pass the URL: `http://host.docker.internal:8000/sandbox/123/generated.png`.
 </strategic_operational_rules>
 
 <loop_prevention>
@@ -562,6 +576,9 @@ from contextvars import ContextVar
 # ContextVar to hold the active MCP session during agent run
 active_mcp_session: ContextVar[Optional[ClientSession]] = ContextVar("active_mcp_session", default=None)
 
+# ContextVar to hold all active ClientSessions for the current request
+active_sessions: ContextVar[dict] = ContextVar("active_sessions", default={})
+
 # ContextVar to hold the current session/thread_id for file organization
 active_session_id: ContextVar[str] = ContextVar("active_session_id", default="default")
 
@@ -579,6 +596,7 @@ class AgentSessionProxy:
     def __init__(self, agent):
         self.agent = agent
         self.session = None
+        self.sessions = {}
         self._session_id: str = "default"
         self.tone: Optional[str] = None
 
@@ -638,6 +656,7 @@ class AgentSessionProxy:
     async def ainvoke(self, inputs, config=None, **kwargs):
         inputs = self._inject_date_context(inputs)
         token_mcp = active_mcp_session.set(self.session)
+        token_sessions = active_sessions.set(self.sessions or {})
         token_sid = active_session_id.set(self._session_id or "default")
         token_words = active_user_words.set(self._extract_user_words(inputs))
         tone_map = {
@@ -651,6 +670,7 @@ class AgentSessionProxy:
             return await self.agent.ainvoke(inputs, config, **kwargs)
         finally:
             active_mcp_session.reset(token_mcp)
+            active_sessions.reset(token_sessions)
             active_session_id.reset(token_sid)
             active_user_words.reset(token_words)
             active_temperature.reset(token_temp)
@@ -658,6 +678,7 @@ class AgentSessionProxy:
     async def invoke(self, inputs, config=None, **kwargs):
         inputs = self._inject_date_context(inputs)
         token_mcp = active_mcp_session.set(self.session)
+        token_sessions = active_sessions.set(self.sessions or {})
         token_sid = active_session_id.set(self._session_id or "default")
         token_words = active_user_words.set(self._extract_user_words(inputs))
         tone_map = {
@@ -671,6 +692,7 @@ class AgentSessionProxy:
             return await self.agent.invoke(inputs, config, **kwargs)
         finally:
             active_mcp_session.reset(token_mcp)
+            active_sessions.reset(token_sessions)
             active_session_id.reset(token_sid)
             active_user_words.reset(token_words)
             active_temperature.reset(token_temp)
@@ -683,6 +705,7 @@ class AgentSessionProxy:
         if config and isinstance(config, dict):
             sid = config.get("configurable", {}).get("thread_id", "default")
         token_mcp = active_mcp_session.set(self.session)
+        token_sessions = active_sessions.set(self.sessions or {})
         token_sid = active_session_id.set(sid)
         token_words = active_user_words.set(self._extract_user_words(inputs))
         tone_map = {
@@ -697,6 +720,7 @@ class AgentSessionProxy:
                 yield event
         finally:
             active_mcp_session.reset(token_mcp)
+            active_sessions.reset(token_sessions)
             active_session_id.reset(token_sid)
             active_user_words.reset(token_words)
             active_temperature.reset(token_temp)
@@ -803,6 +827,349 @@ async def connect_to_all_mcp_servers():
                 yield sessions
 
 
+def get_ngrok_url() -> Optional[str]:
+    import urllib.request
+    import json
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=0.5) as response:
+            data = json.loads(response.read().decode())
+            tunnels = data.get("tunnels", [])
+            for tunnel in tunnels:
+                if tunnel.get("proto") == "https":
+                    return tunnel.get("public_url")
+    except Exception as e:
+        logger.warning(f"Failed to fetch ngrok public URL: {e}")
+    return None
+
+
+def rewrite_local_to_public_url(val: Any) -> Any:
+    if isinstance(val, str):
+        if val.startswith("/sandbox/") or "/sandbox/" in val or val.startswith("/Users/adamdali/Documents/AI_Agent_MR/gen-content/"):
+            sandbox_relative_path = ""
+            if val.startswith("/sandbox/"):
+                sandbox_relative_path = val.replace("/sandbox/", "", 1)
+            elif "/sandbox/" in val:
+                sandbox_relative_path = val.split("/sandbox/", 1)[1]
+            elif val.startswith("/Users/adamdali/Documents/AI_Agent_MR/gen-content/"):
+                sandbox_relative_path = val.replace("/Users/adamdali/Documents/AI_Agent_MR/gen-content/", "", 1)
+            
+            if sandbox_relative_path:
+                ngrok_url = get_ngrok_url()
+                if ngrok_url:
+                    public_url = f"{ngrok_url}/sandbox/{sandbox_relative_path}"
+                    logger.info(f"Rewrote local path to ngrok URL: {val} -> {public_url}")
+                    return public_url
+                else:
+                    public_url = f"http://192.168.5.184:8000/sandbox/{sandbox_relative_path}"
+                    logger.warning(f"ngrok not running. Rewrote local path to host LAN IP: {val} -> {public_url}")
+                    return public_url
+    elif isinstance(val, list):
+        return [rewrite_local_to_public_url(item) for item in val]
+    elif isinstance(val, dict):
+        return {k: rewrite_local_to_public_url(v) for k, v in val.items()}
+    return val
+
+
+def get_postiz_bucket_domain() -> str:
+    env_url = os.getenv("CLOUDFLARE_BUCKET_URL")
+    if not env_url:
+        raise ValueError(
+            "CLOUDFLARE_BUCKET_URL environment variable is not set. "
+            "Please configure it in your backend/.env file."
+        )
+    domain = env_url.replace("https://", "").replace("http://", "").split("/")[0]
+    return domain
+
+
+def adapt_postiz_schedule_payload(social_post_list: Any) -> Any:
+    from datetime import datetime, timezone
+    if not isinstance(social_post_list, list):
+        return social_post_list
+        
+    adapted_list = []
+    for item in social_post_list:
+        if not isinstance(item, dict):
+            adapted_list.append(item)
+            continue
+            
+        adapted_item = item.copy()
+        flat_post_type = adapted_item.pop("post_type", None)
+        
+        # Extract and flatten root-level dictionary settings
+        nested_settings = None
+        if "settings" in adapted_item and isinstance(adapted_item["settings"], dict):
+            nested_settings = adapted_item.pop("settings")
+            
+        # Extract nested post/post_info/settings inside postsAndComments or root
+        if "postsAndComments" in adapted_item and isinstance(adapted_item["postsAndComments"], list) and len(adapted_item["postsAndComments"]) > 0:
+            first_post = adapted_item["postsAndComments"][0]
+            if isinstance(first_post, dict):
+                # If content or attachments are nested under a sub-key like post_info, elevate them
+                for nest_key in ["post", "post_info", "postInfo"]:
+                    nest_obj = first_post.get(nest_key)
+                    if isinstance(nest_obj, dict):
+                        if "content" in nest_obj and not first_post.get("content"):
+                            first_post["content"] = nest_obj.get("content")
+                        if "attachments" in nest_obj and not first_post.get("attachments"):
+                            first_post["attachments"] = nest_obj.get("attachments")
+                        if "settings" in nest_obj:
+                            n_set = nest_obj.get("settings")
+                            if n_set:
+                                if not nested_settings:
+                                    nested_settings = n_set
+                                elif isinstance(nested_settings, dict) and isinstance(n_set, dict):
+                                    nested_settings = {**nested_settings, **n_set}
+                # Also support direct settings inside the postsAndComments item
+                if "settings" in first_post:
+                    n_set = first_post.get("settings")
+                    if n_set:
+                        if not nested_settings:
+                            nested_settings = n_set
+                        elif isinstance(nested_settings, dict) and isinstance(n_set, dict):
+                            nested_settings = {**nested_settings, **n_set}
+                    
+                first_post.pop("post", None)
+                first_post.pop("post_info", None)
+                first_post.pop("postInfo", None)
+                first_post.pop("settings", None)
+
+        # Also support root-level nested objects (e.g. post_info at the root)
+        for nest_key in ["post_info", "postInfo", "post"]:
+            nest_obj = adapted_item.get(nest_key)
+            if isinstance(nest_obj, dict):
+                if "content" in nest_obj and not adapted_item.get("content"):
+                    adapted_item["content"] = nest_obj.get("content")
+                if "attachments" in nest_obj and not adapted_item.get("attachments"):
+                    adapted_item["attachments"] = nest_obj.get("attachments")
+                # Extra mapping for privacy_level if defined directly inside nested root
+                if "privacy_level" in nest_obj:
+                    if not nested_settings:
+                        nested_settings = {}
+                    if isinstance(nested_settings, dict):
+                        nested_settings["privacy_level"] = nest_obj.get("privacy_level")
+                if "settings" in nest_obj:
+                    n_set = nest_obj.get("settings")
+                    if n_set:
+                        if not nested_settings:
+                            nested_settings = n_set
+                        elif isinstance(nested_settings, dict) and isinstance(n_set, dict):
+                            nested_settings = {**nested_settings, **n_set}
+                    
+        adapted_item.pop("post_info", None)
+        adapted_item.pop("postInfo", None)
+        adapted_item.pop("post", None)
+
+        # Merge extracted nested settings
+        if nested_settings:
+            if "settings" not in adapted_item or not isinstance(adapted_item["settings"], list):
+                adapted_item["settings"] = []
+            if isinstance(nested_settings, dict):
+                for k, v in nested_settings.items():
+                    if not any(isinstance(s, dict) and s.get("key") == k for s in adapted_item["settings"]):
+                        adapted_item["settings"].append({"key": k, "value": v})
+            elif isinstance(nested_settings, list):
+                for s in nested_settings:
+                    if isinstance(s, dict) and s.get("key"):
+                        k = s.get("key")
+                        if not any(isinstance(x, dict) and x.get("key") == k for x in adapted_item["settings"]):
+                            adapted_item["settings"].append(s)
+        
+        # 1. Adapt integrationIds / integrations -> integrationId
+        if "integrationId" not in adapted_item:
+            for key in ["integrationIds", "integrations"]:
+                if key in adapted_item:
+                    ids = adapted_item.pop(key)
+                    if isinstance(ids, list) and len(ids) > 0:
+                        adapted_item["integrationId"] = ids[0]
+                    elif isinstance(ids, str):
+                        adapted_item["integrationId"] = ids
+                    break
+                    
+        # 2. Extract media attachments if passed as "media"
+        extracted_attachments = []
+        if "media" in adapted_item:
+            media_list = adapted_item.pop("media")
+            if isinstance(media_list, list):
+                for m in media_list:
+                    if isinstance(m, dict):
+                        url = m.get("path") or m.get("url")
+                        if url:
+                            extracted_attachments.append(url)
+                    elif isinstance(m, str):
+                        extracted_attachments.append(m)
+        
+        # Extract and merge root-level attachments if postsAndComments is present
+        root_attachments = []
+        if "postsAndComments" in adapted_item and "attachments" in adapted_item:
+            raw_att = adapted_item.pop("attachments")
+            if isinstance(raw_att, list):
+                root_attachments = raw_att
+            elif isinstance(raw_att, str):
+                root_attachments = [raw_att]
+        
+        # 3. Adapt content and attachments hierarchy if flat
+        if "postsAndComments" not in adapted_item:
+            content = adapted_item.pop("content", "")
+            attachments = adapted_item.pop("attachments", [])
+            all_attachments = attachments + extracted_attachments + root_attachments
+            # Ensure HTML paragraph wrappers
+            if content and not content.startswith("<"):
+                content = f"<p>{content}</p>"
+            adapted_item["postsAndComments"] = [
+                {
+                    "content": content,
+                    "attachments": all_attachments
+                }
+            ]
+        else:
+            # If postsAndComments is already present, ensure extracted media/attachments are appended to its first item
+            all_to_append = extracted_attachments + root_attachments
+            if all_to_append and isinstance(adapted_item["postsAndComments"], list) and len(adapted_item["postsAndComments"]) > 0:
+                first_post = adapted_item["postsAndComments"][0]
+                if isinstance(first_post, dict):
+                    if "attachments" not in first_post or first_post["attachments"] is None:
+                        first_post["attachments"] = []
+                    first_post["attachments"] = first_post["attachments"] + all_to_append
+                    
+        # Ensure attachments inside postsAndComments items are always flattened to string URLs
+        if "postsAndComments" in adapted_item and isinstance(adapted_item["postsAndComments"], list):
+            for post_item in adapted_item["postsAndComments"]:
+                if isinstance(post_item, dict):
+                    if "attachments" not in post_item or post_item["attachments"] is None:
+                        post_item["attachments"] = []
+                    if isinstance(post_item["attachments"], list):
+                        cleaned_attachments = []
+                        for att in post_item["attachments"]:
+                            if isinstance(att, dict):
+                                url = att.get("path") or att.get("url")
+                                if url:
+                                    cleaned_attachments.append(url)
+                            elif isinstance(att, str):
+                                cleaned_attachments.append(att)
+                        post_item["attachments"] = cleaned_attachments
+            
+        # Correct any truncated/malformed Postiz R2 bucket domains in attachments
+        correct_domain = get_postiz_bucket_domain()
+        if "postsAndComments" in adapted_item and isinstance(adapted_item["postsAndComments"], list):
+            for post_item in adapted_item["postsAndComments"]:
+                if isinstance(post_item, dict) and isinstance(post_item.get("attachments"), list):
+                    import re
+                    prefix = correct_domain[:9]
+                    post_item["attachments"] = [
+                        re.sub(rf"https?://{prefix}[0-9a-zA-Z]*\.r2\.dev", f"https://{correct_domain}", att)
+                        if isinstance(att, str) else att
+                        for att in post_item["attachments"]
+                    ]
+
+        # 4. Inject default values for required envelope fields if missing
+        if "isPremium" not in adapted_item:
+            adapted_item["isPremium"] = False
+        if "shortLink" not in adapted_item:
+            adapted_item["shortLink"] = False
+        if "type" not in adapted_item:
+            adapted_item["type"] = "now"
+        if "date" not in adapted_item:
+            adapted_item["date"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            
+        # Convert any settings that are dictionary maps (e.g. [{"privacy_level": "SELF_ONLY"}]) to {"key": k, "value": v}
+        if "settings" in adapted_item and isinstance(adapted_item["settings"], list):
+            flat_settings = []
+            for s in adapted_item["settings"]:
+                if isinstance(s, dict):
+                    if "key" in s:
+                        flat_settings.append(s)
+                    else:
+                        for k, v in s.items():
+                            flat_settings.append({"key": k, "value": v})
+                else:
+                    flat_settings.append(s)
+            adapted_item["settings"] = flat_settings
+
+        # Clean up empty or invalid settings (objects missing the required 'key' field)
+        if "settings" in adapted_item and isinstance(adapted_item["settings"], list):
+            adapted_item["settings"] = [
+                s for s in adapted_item["settings"]
+                if isinstance(s, dict) and s.get("key") is not None
+            ]
+            for s in adapted_item["settings"]:
+                if s.get("key") == "privacy_level":
+                    val = s.get("value")
+                    if isinstance(val, bool):
+                        s["value"] = "SELF_ONLY" if val else "PUBLIC_TO_EVERYONE"
+                    elif isinstance(val, str):
+                        val_upper = val.upper().strip()
+                        if val_upper in ["PUBLIC", "PUBLIC_TO_EVERYONE"]:
+                            s["value"] = "PUBLIC_TO_EVERYONE"
+                        elif val_upper in ["FRIENDS", "MUTUAL_FOLLOW_FRIENDS"]:
+                            s["value"] = "MUTUAL_FOLLOW_FRIENDS"
+                        elif val_upper in ["FOLLOWER", "FOLLOWER_OF_CREATOR"]:
+                            s["value"] = "FOLLOWER_OF_CREATOR"
+                        elif val_upper in ["PRIVATE", "SELF", "SELF_ONLY"]:
+                            s["value"] = "SELF_ONLY"
+                        else:
+                            s["value"] = val
+            
+        if "settings" not in adapted_item or not isinstance(adapted_item["settings"], list):
+            adapted_item["settings"] = []
+            
+        # Build a lookup of existing setting keys for fast membership checks
+        existing_keys = {s.get("key") for s in adapted_item["settings"] if isinstance(s, dict)}
+        
+        # Inject ALL required TikTok defaults if missing.
+        # TikTok (Postiz "George") requires every one of these settings to be present.
+        # Missing ANY of them causes a cascading validation crash.
+        # Source: SKILL.md lines 80-88 and Postiz integrationSchema for TikTok.
+        tiktok_defaults = {
+            "privacy_level": "PUBLIC_TO_EVERYONE",       # string enum
+            "duet": False,                                # boolean
+            "stitch": False,                              # boolean
+            "comment": True,                              # boolean
+            "autoAddMusic": "yes",                        # string enum: "yes" | "no"
+            "brand_content_toggle": False,                # boolean
+            "brand_organic_toggle": True,                 # boolean
+            "content_posting_method": "DIRECT_POST",     # string
+        }
+        for key, default_val in tiktok_defaults.items():
+            if key not in existing_keys:
+                adapted_item["settings"].append({"key": key, "value": default_val})
+                logger.info(f"Dynamically injected default setting: {key}={default_val}")
+        
+        # Ensure boolean-typed settings are actual booleans (not strings like "true"/"false")
+        boolean_settings = {"duet", "stitch", "comment", "brand_content_toggle", "brand_organic_toggle"}
+        for s in adapted_item["settings"]:
+            if isinstance(s, dict) and s.get("key") in boolean_settings:
+                val = s.get("value")
+                if isinstance(val, str):
+                    s["value"] = val.lower().strip() in ("true", "1", "yes")
+                elif not isinstance(val, bool):
+                    s["value"] = bool(val)
+        
+        # Ensure autoAddMusic is a valid enum string ("yes" or "no")
+        for s in adapted_item["settings"]:
+            if isinstance(s, dict) and s.get("key") == "autoAddMusic":
+                val = s.get("value")
+                if isinstance(val, bool):
+                    s["value"] = "yes" if val else "no"
+                elif isinstance(val, str) and val.lower().strip() not in ("yes", "no"):
+                    s["value"] = "yes"
+            
+        # Ensure 'post_type' key is present in settings to satisfy Postiz DB schema constraints
+        if "post_type" not in existing_keys:
+            if flat_post_type:
+                post_type_val = flat_post_type
+            else:
+                # Default to post which is universally valid for Instagram feed posts
+                post_type_val = "post"
+            
+            adapted_item["settings"].append({"key": "post_type", "value": post_type_val})
+            logger.info(f"Dynamically injected post_type setting: {post_type_val}")
+            
+        adapted_list.append(adapted_item)
+        
+    logger.info(f"Adapted Postiz socialPost payload structure: {social_post_list} -> {adapted_list}")
+    return adapted_list
+
+
 def mcp_tool_to_langchain(mcp_tool, session: ClientSession):
     tool_name = mcp_tool.name
     tool_desc = mcp_tool.description
@@ -838,12 +1205,20 @@ def mcp_tool_to_langchain(mcp_tool, session: ClientSession):
     args_schema = create_model(f"{tool_name}Args", **fields)
     
     async def _run_tool(**kwargs):
+        nonlocal tool_name
+        if tool_name == "schedulePostTool":
+            tool_name = "integrationSchedulePostTool"
+            logger.info("Rerouted legacy schedulePostTool execution to integrationSchedulePostTool")
+            
         # 1. Pre-flight path resolution (Directive 2.2)
         resolved_kwargs = {}
         shared_root = str(BASE_WORKSPACE)
         
+        is_postiz_url_tool = tool_name in ["uploadFromUrlTool", "integrationSchedulePostTool"]
         for k, v in kwargs.items():
-            if isinstance(v, str) and v.startswith("/workspace/"):
+            if is_postiz_url_tool:
+                resolved_kwargs[k] = rewrite_local_to_public_url(v)
+            elif isinstance(v, str) and v.startswith("/workspace/"):
                 filename = v.replace("/workspace/", "", 1)
                 resolved_path = os.path.abspath(os.path.join(shared_root, filename))
                 resolved_kwargs[k] = resolved_path
@@ -865,12 +1240,110 @@ def mcp_tool_to_langchain(mcp_tool, session: ClientSession):
         if session_id and "session_id" in args_schema.model_fields and "session_id" not in resolved_kwargs:
             resolved_kwargs["session_id"] = session_id
  
-        # 2. Invoke MCP Tool directly on the session closure
+        # Auto-deserialize JSON strings passed for array/object type parameters
+        for k, v in list(resolved_kwargs.items()):
+            param_schema = properties.get(k, {})
+            param_type = param_schema.get("type")
+            
+            if isinstance(v, str) and (v.strip().startswith("[") or v.strip().startswith("{")):
+                if param_type in ["array", "object"]:
+                    try:
+                        v = json.loads(v)
+                        resolved_kwargs[k] = v
+                        logger.info(f"Auto-deserialized JSON string for parameter '{k}': {v}")
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-deserialize JSON string for parameter '{k}': {e}")
+            
+            # Wrap single dict into list if parameter expects an array
+            if param_type == "array" and isinstance(resolved_kwargs.get(k), dict):
+                resolved_kwargs[k] = [resolved_kwargs[k]]
+                logger.info(f"Auto-wrapped single dictionary into list for parameter '{k}': {resolved_kwargs[k]}")
+
+        # Adapt socialPost payload if calling the scheduling tool
+        if tool_name == "integrationSchedulePostTool":
+            # If flat arguments were passed, wrap them in the socialPost array
+            if "socialPost" not in resolved_kwargs:
+                flat_post = {}
+                flat_keys = ["integrationId", "integrationIds", "content", "attachments", "media", "isPremium", "date", "shortLink", "type", "settings", "post_type"]
+                for fk in flat_keys:
+                    if fk in resolved_kwargs:
+                        flat_post[fk] = resolved_kwargs.pop(fk)
+                if flat_post:
+                    resolved_kwargs["socialPost"] = [flat_post]
+                    logger.info(f"Dynamically wrapped flat post arguments into socialPost array: {resolved_kwargs}")
+            
+            if "socialPost" in resolved_kwargs:
+                resolved_kwargs["socialPost"] = adapt_postiz_schedule_payload(resolved_kwargs["socialPost"])
+
+        # 2. Invoke MCP Tool directly on the session closure (with self-healing fallback)
+        try:
+            from datetime import datetime
+            with open("/Users/adamdali/Documents/AI_Agent_MR/backend/mcp_call_debug.json", "w") as dbg:
+                json.dump({
+                    "tool_name": tool_name,
+                    "args": resolved_kwargs,
+                    "timestamp": datetime.now().isoformat()
+                }, dbg, indent=2, default=str)
+        except Exception as dbg_err:
+            logger.warning(f"Failed to write mcp_call_debug.json: {dbg_err}")
+
         logger.info(f"Calling MCP tool '{tool_name}' with args {resolved_kwargs}")
-        result = await session.call_tool(tool_name, resolved_kwargs)
+        import anyio
+        
+        # Resolve active session dynamically from ContextVar to prevent closed session reuse
+        is_postiz = "postiz" in tool_name or tool_name in ["integrationSchedulePostTool", "integrationList", "uploadFromUrlTool", "integrationSchema", "triggerTool", "ask_postiz"]
+        session_key = "postiz" if is_postiz else "comfyui"
+        active_sess = active_sessions.get().get(session_key)
+        target_session = active_sess if active_sess is not None else session
+        
+        try:
+            result = await target_session.call_tool(tool_name, resolved_kwargs)
+        except (anyio.ClosedResourceError, Exception) as e:
+            logger.warning(f"MCP tool call failed with {type(e).__name__}: {e}. Triggering dynamic self-healing reconnection...")
+            
+            # Check if this is a Postiz tool
+            is_postiz = "postiz" in tool_name or tool_name in ["integrationSchedulePostTool", "integrationList", "uploadFromUrlTool", "integrationSchema", "triggerTool", "ask_postiz"]
+            if is_postiz:
+                postiz_api_key = os.getenv("POSTIZ_API_KEY")
+                postiz_url = os.getenv("POSTIZ_MCP_URL", "https://api.postiz.com/mcp").rstrip("/")
+                if postiz_api_key:
+                    headers = {"Authorization": f"Bearer {postiz_api_key}"}
+                    postiz_ctx = streamablehttp_client(postiz_url, headers=headers)
+                    try:
+                        async with postiz_ctx as postiz_conn:
+                            r, w = postiz_conn[:2]
+                            async with ClientSession(r, w) as new_session:
+                                await new_session.initialize()
+                                logger.info(f"Reconnected successfully to Postiz MCP! Retrying tool call '{tool_name}'...")
+                                result = await new_session.call_tool(tool_name, resolved_kwargs)
+                    except Exception as reconn_err:
+                        logger.error(f"Failed to reconnect to Postiz MCP: {reconn_err}")
+                        raise e
+                else:
+                    raise e
+            else:
+                # ComfyUI reconnection
+                comfyui_ctx = connect_to_mcp_server()
+                try:
+                    async with comfyui_ctx as comfyui_conn:
+                        r, w = comfyui_conn[:2]
+                        async with ClientSession(r, w) as new_session:
+                            await new_session.initialize()
+                            logger.info(f"Reconnected successfully to ComfyUI MCP! Retrying tool call '{tool_name}'...")
+                            result = await new_session.call_tool(tool_name, resolved_kwargs)
+                except Exception as reconn_err:
+                    logger.error(f"Failed to reconnect to ComfyUI MCP: {reconn_err}")
+                    raise e
         
         if result.isError:
-            raise ValueError(f"MCP tool error: {result.content}")
+            error_msg = ""
+            for content_item in result.content:
+                if content_item.type == "text":
+                    error_msg += content_item.text
+            if not error_msg:
+                error_msg = str(result.content)
+            logger.warning(f"MCP tool '{tool_name}' returned error: {error_msg}")
+            return f"Error executing tool '{tool_name}': {error_msg}"
             
         # Parse output content list
         text_val = ""
@@ -959,6 +1432,7 @@ async def get_marketing_agent(sessions, session_id: str = "default", tone: Optio
     
     if _cached_agent is not None:
         _cached_agent.session = comfyui_session
+        _cached_agent.sessions = sessions_dict
         _cached_agent._session_id = session_id
         _cached_agent.tone = tone
         return _cached_agent
@@ -975,7 +1449,7 @@ async def get_marketing_agent(sessions, session_id: str = "default", tone: Optio
         postiz_session = sessions_dict["postiz"]
         try:
             postiz_tools_list = await postiz_session.list_tools()
-            lc_postiz_tools = [mcp_tool_to_langchain(t, postiz_session) for t in postiz_tools_list.tools]
+            lc_postiz_tools = [mcp_tool_to_langchain(t, postiz_session) for t in postiz_tools_list.tools if t.name not in ("schedulePostTool",)]
             lc_mcp_tools.extend(lc_postiz_tools)
             logger.info(f"Registered {len(lc_postiz_tools)} tools from Postiz MCP server dynamically.")
         except Exception as e:
@@ -1010,6 +1484,7 @@ async def get_marketing_agent(sessions, session_id: str = "default", tone: Optio
     )
     _cached_agent = AgentSessionProxy(raw_agent)
     _cached_agent.session = comfyui_session
+    _cached_agent.sessions = sessions_dict
     _cached_agent._session_id = session_id
     _cached_agent.tone = tone
     return _cached_agent

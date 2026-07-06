@@ -27,3 +27,6 @@ marketing_workspace_*/
 *.png
 *.jpg
 *.jpeg
+
+# ignore mcp debug file
+mcp_call_debug.json

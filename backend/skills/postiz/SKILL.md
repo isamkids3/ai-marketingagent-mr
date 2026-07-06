@@ -6,7 +6,93 @@ description: Postiz is a tool to schedule social media and chat posts to 28+ cha
 # Postiz Social Media Automation Skill
 
 > [!TIP]
-> **MCP Tool Preference:** When interacting with Postiz programmatically, **always prefer using the registered MCP tools** (such as `integrationList` and `schedulePostTool`) instead of running CLI commands. Use the CLI documentation below as a structural reference for platform-specific settings, comment threading structures, and media upload conventions.
+> **MCP Tool Preference:** When interacting with Postiz programmatically, **always prefer using the registered MCP tools** (such as `integrationList` and `integrationSchedulePostTool`) instead of running CLI commands. Refer to the **MCP Tool Specifications** section below for exact JSON schema formatting rules, parameter names, and nesting requirements.
+
+## MCP Tool Specifications
+
+When interacting with Postiz programmatically, you MUST use the registered MCP tools. Below are the precise schemas and structures for the core tools.
+
+### 1. `integrationList`
+Lists connected social media accounts. Always call this first to get the active `integrationId` for the target platform.
+- **Returns**: A list of integration objects containing `.id` (to use as `integrationId`) and `.identifier` (platform name like `instagram-standalone`, `x`, `linkedin`).
+
+### 2. `uploadFromUrlTool`
+Uploads local sandbox images to Postiz before scheduling.
+- **Arguments**:
+  - `url` (string, REQUIRED): The public HTTP URL of the image.
+    *CRITICAL: Since Postiz runs in Docker, it cannot access local filesystem paths. Convert local `/sandbox/...` paths to `http://host.docker.internal:8000/sandbox/...`.*
+- **Returns**: `{ id, path }` where `path` is the Postiz-hosted public media URL.
+
+### 3. `integrationSchedulePostTool`
+Schedules a post to one or more social media channels.
+- **Arguments**:
+  - `socialPost` (array of objects, REQUIRED): A list of channel postings. Each object must contain:
+    - `integrationId` (string, REQUIRED): The unique ID of the target channel (singular, e.g. `"cmr1lbysl0001my8ooeyk3hwt"`). **Do NOT use `integrationIds`.**
+    - `isPremium` (boolean, REQUIRED): Set to `false` (or `true` if target is a premium X account).
+    - `date` (string, REQUIRED): The publication date in UTC ISO format (e.g. `"2026-07-02T12:00:00.000Z"`).
+    - `shortLink` (boolean, REQUIRED): Set to `false`.
+    - `type` (string, REQUIRED): `"schedule"`, `"draft"`, or `"now"`.
+    - `postsAndComments` (array of objects, REQUIRED): The content array. The first item represents the post; subsequent items are comments/threads. Each object must contain:
+      - `content` (string, REQUIRED): Post content. HTML format (wrap paragraphs in `<p>`).
+      - `attachments` (array of strings, REQUIRED): List of public media URLs (use the `path` returned by `uploadFromUrlTool` or Cloudflare R2 URL).
+    - `settings` (array of objects, REQUIRED): Platform-specific settings.
+      * If you are not configuring platform-specific settings, you MUST pass this as an empty array: `"settings": []`. Do NOT pass an empty object inside the array (e.g., do NOT write `[{}]`).
+      * If you ARE configuring platform-specific settings (like TikTok's privacy_level, duet, stitch, comment, autoAddMusic, brand_content_toggle, brand_organic_toggle, content_posting_method), they MUST be structured as a flat array of key/value dictionaries, for example: `"settings": [{"key": "privacy_level", "value": "SELF_ONLY"}, {"key": "duet", "value": false}]`. Do NOT nest settings under a sub-key like `"post"` or `"settings"`.
+
+**Example Payload (No Settings)**:
+```json
+{
+  "socialPost": [
+    {
+      "integrationId": "cmr1lbysl0001my8ooeyk3hwt",
+      "isPremium": false,
+      "date": "2026-07-02T12:00:00.000Z",
+      "shortLink": false,
+      "type": "now",
+      "postsAndComments": [
+        {
+          "content": "<p>My brand new post content!</p>",
+          "attachments": ["https://pub-xxx.r2.dev/image.png"]
+        }
+      ],
+      "settings": []
+    }
+  ]
+}
+```
+
+**Example Payload (With Configured TikTok Settings)**:
+```json
+{
+  "socialPost": [
+    {
+      "integrationId": "cmr4d32en0001n26yltm4qo9g",
+      "isPremium": false,
+      "date": "2026-07-06T12:00:00.000Z",
+      "shortLink": false,
+      "type": "now",
+      "postsAndComments": [
+        {
+          "content": "<p>Sunset quote post</p>",
+          "attachments": ["https://pub-xxx.r2.dev/sunset.png"]
+        }
+      ],
+      "settings": [
+        {"key": "privacy_level", "value": "SELF_ONLY"},
+        {"key": "duet", "value": false},
+        {"key": "stitch", "value": false},
+        {"key": "comment", "value": true},
+        {"key": "autoAddMusic", "value": "yes"},
+        {"key": "brand_content_toggle", "value": false},
+        {"key": "brand_organic_toggle", "value": true},
+        {"key": "content_posting_method", "value": "DIRECT_POST"}
+      ]
+    }
+  ]
+}
+```
+
+---
 
 Postiz is a social media automation CLI for scheduling posts across 28+ platforms.
 
