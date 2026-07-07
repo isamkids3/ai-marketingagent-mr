@@ -183,11 +183,12 @@ class IdeogramPrompt(BaseModel):
 workspace_dir = tempfile.mkdtemp(prefix="marketing_workspace_")
 WorkspaceManager.set_workspace_dir(workspace_dir)
 
-# Route "/workspace/" virtual paths to actual local disk storage
+# Route "/workspace/" and "/sandbox/" virtual paths to actual local disk storage
 backend = CompositeBackend(
     default=StateBackend(),
     routes={
         "/workspace/": FilesystemBackend(root_dir=workspace_dir, virtual_mode=True),
+        "/sandbox/": FilesystemBackend(root_dir=str(BASE_WORKSPACE), virtual_mode=True),
     }
 )
 
@@ -477,13 +478,16 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - Use `text_image` when generating an original image from scratch solely from a text description.
    - **Images containing written text**: When generating an image that requires specific written words, typography, signs, logos, or labels within the visual itself, try to use the `text_image` generator tool (as it uses the Ideogram model, which is optimized for readable text rendering).
    - Use `image_reference_and_text_to_image` when the user wants to generate a brand new image using a reference image as a guide for layout, composition, character pose, or style transfer (ControlNet/IP-Adapter style).
+   - Use `image_image_2ref` when combining elements, styles, subjects, or backgrounds from TWO distinct reference images into a single generated output. **CRITICAL**: This tool is part of the `multi-reference-editing` skill. When calling `image_image_2ref`, you MUST first read the full instructions in `/workspace/skills/multi-reference-editing/SKILL.md` using the `read_file` tool to understand the specific prompting pattern (using literal tags `"image 1"` and `"image 2"`).
+   - Use `image_image_3ref` when combining elements, styles, subjects, or backgrounds from THREE distinct reference images into a single generated output. **CRITICAL**: This tool is part of the `multi-reference-editing` skill. When calling `image_image_3ref`, you MUST first read the full instructions in `/workspace/skills/multi-reference-editing/SKILL.md` using the `read_file` tool to understand the specific prompting pattern (using literal tags `"image 1"`, `"image 2"`, and `"image 3"`).
    - Use `image_image` when performing Image-to-Image (Img2Img) refinement (e.g. adding elements, changing background, or altering style/details of an existing generated image while keeping its overall content). Set `init_image` to the previously generated image's `/sandbox/...` path from history.
    - Use `mask_image_image` when the user has uploaded a masked image (which contains both the image and a transparency mask, indicated by `[Uploaded Masked Image: /sandbox/...]`) and wants to perform targeted inpainting/editing on the masked area. Set `image` to the masked image's `/sandbox/...` path.
 
-4. Image Path Reporting — CRITICAL RULE: Every image generation tool (`text_image`, `image_reference_and_text_to_image`, `image_image`, `mask_image_image`) returns a tool observation that begins with `/sandbox/...`. This is the ONLY path you must report to the user. NEVER report the `asset_url`, `image_url`, or any URL from within the JSON body of the tool result — those are internal ComfyUI server URLs (e.g. `http://localhost:8188/view?filename=...` or `/output/...`) that the user cannot access. The tool observation starting with `/sandbox/` is the correct, user-accessible path. Always quote it verbatim.
+4. Image Path Reporting — CRITICAL RULE: Every image generation tool (`text_image`, `image_reference_and_text_to_image`, `image_image`, `image_image_2ref`, `image_image_3ref`, `mask_image_image`) returns a tool observation that begins with `/sandbox/...`. This is the ONLY path you must report to the user. NEVER report the `asset_url`, `image_url`, or any URL from within the JSON body of the tool result — those are internal ComfyUI server URLs (e.g. `http://localhost:8188/view?filename=...` or `/output/...`) that the user cannot access. The tool observation starting with `/sandbox/` is the correct, user-accessible path. Always quote it verbatim.
 
 5. Single-Shot & Sequential Generation:
    - When generating an image, you MUST define all requested visual elements (including typography, primary subjects, secondary details, and layout composition) in a single JSON prompt and trigger the generation workflow tool once. Do NOT call the generation or regeneration tools multiple times to build up the image iteratively one element at a time. Try your best to generate the image with ONE tool call only.
+   - **Strict Single-Call Rule for Multi-Reference Tools**: When using multi-reference editing tools (`image_image_2ref` and `image_image_3ref`), you are strictly forbidden from calling them multiple times or generating multiple versions/options in a single turn. You MUST call these tools exactly once per user request to avoid long generation times.
    - **Generate Images One by One**: If a task requires generating multiple distinct images, do NOT call the image generation tools in parallel or make multiple generation tool calls in a single turn. You must trigger each generation sequentially, waiting for the first image generation to complete and return its path before starting the next image generation.
 
 6. Progress Updates: Before the FIRST tool call only, output a single brief sentence explaining your plan. Do not narrate every subsequent tool call — let the results speak for themselves.
@@ -754,7 +758,7 @@ def connect_to_mcp_server():
         s.connect(("127.0.0.1", port))
         s.close()
         logger.info(f"Connecting to MCP server via Streamable HTTP at {mcp_url}")
-        return streamablehttp_client(mcp_url)
+        return streamablehttp_client(mcp_url, timeout=300)
     except Exception:
         logger.warning("Could not connect to MCP server via Streamable HTTP. Falling back to stdio.")
 
@@ -805,7 +809,7 @@ async def connect_to_all_mcp_servers():
                 logger.info(f"Connecting to Postiz MCP Server at {postiz_url}...")
                 
                 headers = {"Authorization": f"Bearer {postiz_api_key}"}
-                postiz_ctx = streamablehttp_client(postiz_url, headers=headers)
+                postiz_ctx = streamablehttp_client(postiz_url, headers=headers, timeout=300)
                 
                 try:
                     async with postiz_ctx as postiz_conn:
@@ -1308,7 +1312,7 @@ def mcp_tool_to_langchain(mcp_tool, session: ClientSession):
                 postiz_url = os.getenv("POSTIZ_MCP_URL", "https://api.postiz.com/mcp").rstrip("/")
                 if postiz_api_key:
                     headers = {"Authorization": f"Bearer {postiz_api_key}"}
-                    postiz_ctx = streamablehttp_client(postiz_url, headers=headers)
+                    postiz_ctx = streamablehttp_client(postiz_url, headers=headers, timeout=300)
                     try:
                         async with postiz_ctx as postiz_conn:
                             r, w = postiz_conn[:2]

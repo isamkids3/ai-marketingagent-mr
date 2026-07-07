@@ -73,6 +73,10 @@ app.mount("/shares", StaticFiles(directory=shares_dir), name="shares")
 
 # Sandbox Environment Setup (Additive)
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
 BASE_WORKSPACE = Path(os.getenv("SHARED_WORKSPACE_ROOT", str(Path(__file__).parent.parent / "gen-content"))).resolve()
 try:
     os.makedirs(BASE_WORKSPACE, exist_ok=True)

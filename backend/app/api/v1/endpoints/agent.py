@@ -14,6 +14,7 @@ import httpx
 from app.api.deps import get_current_active_user, get_db
 from app.models.user import User
 from app.agent.orchestrator import get_marketing_agent, connect_to_mcp_server, connect_to_all_mcp_servers
+from app.agent.tools import BASE_WORKSPACE
 from app.agent.comfy_router import WorkspaceManager
 from mcp import ClientSession
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,10 +114,11 @@ async def chat_with_agent(
     tone = None
     image_filename = None
     image2_filename = None
+    image3_filename = None
     doc_filename = None
     is_masked = False
     
-    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
+    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", str(BASE_WORKSPACE))
     os.makedirs(shared_root, exist_ok=True)
     
     if "multipart/form-data" in content_type:
@@ -135,6 +137,7 @@ async def chat_with_agent(
 
         image_file = form.get("image")
         image2_file = form.get("image2")
+        image3_file = form.get("image3")
         mask_file = form.get("mask")
         
         if image_file and hasattr(image_file, "filename") and image_file.filename:
@@ -193,6 +196,21 @@ async def chat_with_agent(
                 logger.info(f"Copied uploaded image2 to temp workspace: {temp_image2_path}")
             except Exception as e:
                 logger.warning(f"Could not copy image2 to temp workspace: {e}")
+                
+        if image3_file and hasattr(image3_file, "filename") and image3_file.filename:
+            image3_filename = image3_file.filename
+            image3_path = os.path.join(thread_dir, image3_filename)
+            with open(image3_path, "wb") as buffer:
+                shutil.copyfileobj(image3_file.file, buffer)
+            logger.info(f"Saved uploaded image3 to {image3_path}")
+            
+            # Copy to temp workspace
+            try:
+                temp_image3_path = os.path.join(temp_workspace, image3_filename)
+                shutil.copy2(image3_path, temp_image3_path)
+                logger.info(f"Copied uploaded image3 to temp workspace: {temp_image3_path}")
+            except Exception as e:
+                logger.warning(f"Could not copy image3 to temp workspace: {e}")
             
         doc_file = form.get("document")
         if doc_file and hasattr(doc_file, "filename") and doc_file.filename:
@@ -226,7 +244,14 @@ async def chat_with_agent(
   
     # Formulate custom prompt explaining file locations to the agent if they were uploaded
     custom_prompt = prompt
-    if image_filename and image2_filename:
+    if image_filename and image2_filename and image3_filename:
+        custom_prompt = (
+            f"[Uploaded Reference Image 1: /sandbox/{session_id_str}/{image_filename}]\n"
+            f"[Uploaded Reference Image 2: /sandbox/{session_id_str}/{image2_filename}]\n"
+            f"[Uploaded Reference Image 3: /sandbox/{session_id_str}/{image3_filename}]\n"
+            + custom_prompt
+        )
+    elif image_filename and image2_filename:
         custom_prompt = (
             f"[Uploaded Reference Image 1: /sandbox/{session_id_str}/{image_filename}]\n"
             f"[Uploaded Reference Image 2: /sandbox/{session_id_str}/{image2_filename}]\n"
@@ -248,6 +273,8 @@ async def chat_with_agent(
         meta["image_path"] = f"/sandbox/{session_id_str}/{image_filename}"
     if image2_filename:
         meta["image2_path"] = f"/sandbox/{session_id_str}/{image2_filename}"
+    if image3_filename:
+        meta["image3_path"] = f"/sandbox/{session_id_str}/{image3_filename}"
     if doc_filename:
         meta["doc_path"] = f"/sandbox/{session_id_str}/{doc_filename}"
         meta["doc_name"] = doc_filename
@@ -461,7 +488,7 @@ async def upload_mask(
     Upload a mask image to be applied to an existing original image.
     Merges original and mask into an RGBA PNG and uploads to ComfyUI.
     """
-    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
+    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", str(BASE_WORKSPACE))
     temp_workspace = WorkspaceManager.get_workspace_dir()
     
     session_id_str = ""

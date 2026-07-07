@@ -285,6 +285,7 @@ export default function Home() {
     text: string,
     image: File | null,
     image2: File | null,
+    image3: File | null,
     document: File | null,
     mask: File | null
   ) => {
@@ -331,6 +332,7 @@ export default function Home() {
       meta_data: {
         image_path: image ? URL.createObjectURL(image) : undefined,
         image2_path: image2 ? URL.createObjectURL(image2) : undefined,
+        image3_path: image3 ? URL.createObjectURL(image3) : undefined,
         doc_path: document ? URL.createObjectURL(document) : undefined,
         doc_name: document ? document.name : undefined,
       }
@@ -349,6 +351,7 @@ export default function Home() {
     formData.append("tone", tone);
     if (image) formData.append("image", image);
     if (image2) formData.append("image2", image2);
+    if (image3) formData.append("image3", image3);
     if (document) formData.append("document", document);
     if (mask) formData.append("mask", mask);
 

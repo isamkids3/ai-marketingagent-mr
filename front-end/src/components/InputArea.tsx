@@ -6,6 +6,7 @@ interface InputAreaProps {
     text: string,
     image: File | null,
     image2: File | null,
+    image3: File | null,
     document: File | null,
     mask: File | null
   ) => void;
@@ -23,6 +24,8 @@ export const InputArea: React.FC<InputAreaProps> = ({
   const [stagedImagePreview, setStagedImagePreview] = useState<string | null>(null);
   const [stagedImage2, setStagedImage2] = useState<File | null>(null);
   const [stagedImage2Preview, setStagedImage2Preview] = useState<string | null>(null);
+  const [stagedImage3, setStagedImage3] = useState<File | null>(null);
+  const [stagedImage3Preview, setStagedImage3Preview] = useState<string | null>(null);
   const [stagedDocument, setStagedDocument] = useState<File | null>(null);
   const [stagedMask, setStagedMask] = useState<File | null>(null);
   
@@ -63,19 +66,22 @@ export const InputArea: React.FC<InputAreaProps> = ({
           stageImageFile(files[0], 1);
         } else if (!stagedImage2) {
           stageImageFile(files[0], 2);
+        } else if (!stagedImage3) {
+          stageImageFile(files[0], 3);
         } else {
           stageImageFile(files[0], 1);
         }
       } else {
         stageImageFile(files[0], 1);
-        stageImageFile(files[1], 2);
+        if (files[1]) stageImageFile(files[1], 2);
+        if (files[2]) stageImageFile(files[2], 3);
       }
       clearStagedMask();
       if (imageInputRef.current) imageInputRef.current.value = "";
     }
   };
 
-  const stageImageFile = (file: File, slot: 1 | 2 = 1) => {
+  const stageImageFile = (file: File, slot: 1 | 2 | 3 = 1) => {
     if (!file.type.startsWith("image/")) {
       alert("Please upload an image file (png, jpg, jpeg).");
       return;
@@ -85,9 +91,12 @@ export const InputArea: React.FC<InputAreaProps> = ({
       if (slot === 1) {
         setStagedImage(file);
         setStagedImagePreview(reader.result as string);
-      } else {
+      } else if (slot === 2) {
         setStagedImage2(file);
         setStagedImage2Preview(reader.result as string);
+      } else {
+        setStagedImage3(file);
+        setStagedImage3Preview(reader.result as string);
       }
     };
     reader.readAsDataURL(file);
@@ -159,6 +168,12 @@ export const InputArea: React.FC<InputAreaProps> = ({
     if (imageInputRef.current) imageInputRef.current.value = "";
   };
 
+  const clearStagedImage3 = () => {
+    setStagedImage3(null);
+    setStagedImage3Preview(null);
+    if (imageInputRef.current) imageInputRef.current.value = "";
+  };
+
   const clearStagedMask = () => {
     setStagedMask(null);
     if (maskBaseInputRef.current) maskBaseInputRef.current.value = "";
@@ -196,12 +211,15 @@ export const InputArea: React.FC<InputAreaProps> = ({
           stageImageFile(imageFiles[0], 1);
         } else if (!stagedImage2) {
           stageImageFile(imageFiles[0], 2);
+        } else if (!stagedImage3) {
+          stageImageFile(imageFiles[0], 3);
         } else {
           stageImageFile(imageFiles[0], 1);
         }
       } else {
         stageImageFile(imageFiles[0], 1);
-        stageImageFile(imageFiles[1], 2);
+        if (imageFiles[1]) stageImageFile(imageFiles[1], 2);
+        if (imageFiles[2]) stageImageFile(imageFiles[2], 3);
       }
       clearStagedMask();
     }
@@ -209,13 +227,14 @@ export const InputArea: React.FC<InputAreaProps> = ({
   };
 
   const handleSubmit = () => {
-    if (!text.trim() && !stagedImage && !stagedImage2 && !stagedDocument) return;
+    if (!text.trim() && !stagedImage && !stagedImage2 && !stagedImage3 && !stagedDocument) return;
     if (isLoading) return;
 
-    onSendMessage(text, stagedImage, stagedImage2, stagedDocument, stagedMask);
+    onSendMessage(text, stagedImage, stagedImage2, stagedImage3, stagedDocument, stagedMask);
     setText("");
     clearStagedImage();
     clearStagedImage2();
+    clearStagedImage3();
     clearStagedDocument();
 
     if (textareaRef.current) {
@@ -265,7 +284,7 @@ export const InputArea: React.FC<InputAreaProps> = ({
         />
 
         {/* Thumbnail Previews Section */}
-        {(stagedImagePreview || stagedImage2Preview || stagedDocument) && (
+        {(stagedImagePreview || stagedImage2Preview || stagedImage3Preview || stagedDocument) && (
           <div className="flex flex-wrap items-center gap-3 p-4 border-b border-slate-800/80 bg-slate-950/40 rounded-t-2xl">
             {/* Image 1 Preview */}
             {stagedImagePreview && (
@@ -311,6 +330,29 @@ export const InputArea: React.FC<InputAreaProps> = ({
                 <button
                   type="button"
                   onClick={clearStagedImage2}
+                  className="absolute top-1 right-1 bg-slate-950/80 text-slate-400 hover:text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-all border border-slate-800"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {/* Image 3 Preview */}
+            {stagedImage3Preview && (
+              <div className="relative group w-16 h-16 rounded-lg overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center">
+                <img
+                  src={stagedImage3Preview}
+                  alt="Staged reference 3"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute bottom-1 left-1 bg-slate-950/80 text-slate-300 text-[8px] font-bold px-1.5 py-0.5 rounded border border-slate-800 leading-none">
+                  Ref 3
+                </div>
+                <button
+                  type="button"
+                  onClick={clearStagedImage3}
                   className="absolute top-1 right-1 bg-slate-950/80 text-slate-400 hover:text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-all border border-slate-800"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3 h-3">

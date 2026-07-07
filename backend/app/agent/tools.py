@@ -4,6 +4,10 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables early
+load_dotenv()
 
 # pyrefly: ignore [missing-import]
 from langchain_core.tools import tool

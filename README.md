@@ -9,10 +9,13 @@ Users submit campaign briefs, prompts, or product asset photos, and the system i
 ## 1. Project Capabilities & Features
 
 * **Multimodal Chat Interaction:** Supports full iterative conversational refinement with image attachments, follow-up instructions, and context retention.
-* **Interactive Image Masking & Local Inpainting:** Allows users to paint mask overlays directly on reference images using an interactive brush canvas modal (brush sizes, draw/erase toggle, undo history). The backend automatically handles ComfyUI RGBA merging and alpha inversion.
-* **Intelligent Routing & Framing:** Analyzes intent using a local LLM to route tasks dynamically between text-to-image, reference-image-to-image, and brand/tone transformations (casual, professional, creative).
+* **Interactive Image Masking & Local Inpainting:** Allows users to paint mask overlays directly on reference images using an interactive brush canvas modal. The backend automatically handles ComfyUI RGBA merging and alpha inversion.
+* **Intelligent Routing & Framing:** Analyzes intent using a local LLM to route tasks dynamically between text-to-image, reference-image-to-image, and brand/tone transformations.
+* **3-Image Reference Editing & Compositing:** Enables blending subjects, accessories, and backgrounds/environments from up to three distinct reference images into a single cohesive output visual using the `image_image_3ref` tool.
+* **Virtual Sandbox Workspace Resolution:** Configures virtual `/sandbox/` path mapping to the local workspace volume, allowing filesystem tools (`read_file`, `ls`) to seamlessly verify and read uploaded files.
+* **Dynamic S3/R2 Asset Self-Healing:** Prevents publishing errors by dynamically parsing the Cloudflare R2 bucket configuration and auto-healing token hash truncations in attachment links.
 * **Multi-Platform Aspect Formatter:** Automatically formats final media deliverables using localized social media layout templates and platform ratios.
-* **Context Window Optimization:** Operates entirely locally on a 42,000 token limit using dynamic schema lazy-loading (on-demand MCP tool loading) and strict message boundaries to prevent context bloat.
+* **Context Window Optimization:** Operates locally on a 42,000 token limit using dynamic schema lazy-loading (on-demand MCP tool loading) and strict message boundaries to prevent context bloat.
 * **Shared Sandbox Environment:** Uses a unified local workspace volume for secure asset pre-flight path resolution, sandboxed file writing, and public web-serving mounts.
 
 ---

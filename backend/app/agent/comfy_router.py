@@ -4,14 +4,22 @@ import logging
 import asyncio
 import tempfile
 from typing import Dict, Any, Optional
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+from dotenv import load_dotenv
+
+# Load environment variables early
+load_dotenv()
 
 logger = logging.getLogger("comfy_router")
 logger.setLevel(logging.INFO)
 
 COMFYUI_URL = os.getenv("COMFYUI_URL", "http://localhost:8188")
 BASE_WORKSPACE = os.path.abspath(
-    os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
+    os.getenv(
+        "SHARED_WORKSPACE_ROOT",
+        str(Path(__file__).resolve().parents[3] / "gen-content")
+    )
 )
 
 
@@ -41,7 +49,7 @@ def resolve_local_path(virtual_path: str) -> str:
         return os.path.abspath(os.path.join(WorkspaceManager.get_workspace_dir(), relative_path))
     if virtual_path.startswith("/sandbox/"):
         relative_path = virtual_path.replace("/sandbox/", "", 1)
-        shared_root = os.getenv("SHARED_WORKSPACE_ROOT", "/Users/adamdali/Documents/AI_Agent_MR/gen-content")
+        shared_root = os.getenv("SHARED_WORKSPACE_ROOT", BASE_WORKSPACE)
         return os.path.abspath(os.path.join(shared_root, relative_path))
     return os.path.abspath(virtual_path)
 
