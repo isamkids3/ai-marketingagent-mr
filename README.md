@@ -1,6 +1,6 @@
 # Millenium Radius: Marketing AI Agent Platform
 
-Welcome to the **Millenium Radius** platform—a production-grade, web-based Marketing AI Agent system designed to automate creative asset production, copywriting, and multi-platform aspect ratio tailoring. 
+Welcome to the **Millenium Radius** platform—a prototype-grade, web-based Marketing AI Agent system designed to automate creative asset production, copywriting, and multi-platform aspect ratio tailoring. 
 
 Users submit campaign briefs, prompts, or product asset photos, and the system intelligently orchestrates generation, tailoring captions/tones, formatting sizes (e.g., 9:16, 16:9, 1:1) to major target social platforms, and compiling deliverables.
 
