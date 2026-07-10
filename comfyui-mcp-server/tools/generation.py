@@ -555,7 +555,7 @@ def register_regenerate_tool(
                 elif "audio" in asset.workflow_id.lower() or "song" in asset.workflow_id.lower():
                     output_preferences = ("audio", "audios", "sound", "files")
                 elif "video" in asset.workflow_id.lower():
-                    output_preferences = ("videos", "video", "mp4", "mov", "webm")
+                    output_preferences = ("videos", "video", "mp4", "mov", "webm", "gifs", "gif", "images", "image")
             
             # Step 6: Submit to ComfyUI
             result = comfyui_client.run_custom_workflow(

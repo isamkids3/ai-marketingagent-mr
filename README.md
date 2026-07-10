@@ -11,8 +11,10 @@ Users submit campaign briefs, prompts, or product asset photos, and the system i
 * **Multimodal Chat Interaction:** Supports full iterative conversational refinement with image attachments, follow-up instructions, and context retention.
 * **Interactive Image Masking & Local Inpainting:** Allows users to paint mask overlays directly on reference images using an interactive brush canvas modal. The backend automatically handles ComfyUI RGBA merging and alpha inversion.
 * **Intelligent Routing & Framing:** Analyzes intent using a local LLM to route tasks dynamically between text-to-image, reference-image-to-image, and brand/tone transformations.
+* **Text-to-Video & Video-to-Video Animation:** Exposes advanced video workflows leveraging LTX models (via ComfyUI) to generate 15-second or 30-second video clips (`text_video` and `image_text_video`) directly from text prompts or reference images.
+* **Direct Downloads & Document File Cards:** Displays generated `.pdf` and `.md` files as elegant interactive Document Cards with inline **Preview** and direct **Download** actions. Generated images and videos feature seamless download overlay buttons to bypass manual path copying.
 * **3-Image Reference Editing & Compositing:** Enables blending subjects, accessories, and backgrounds/environments from up to three distinct reference images into a single cohesive output visual using the `image_image_3ref` tool.
-* **Virtual Sandbox Workspace Resolution:** Configures virtual `/sandbox/` path mapping to the local workspace volume, allowing filesystem tools (`read_file`, `ls`) to seamlessly verify and read uploaded files.
+* **Virtual Sandbox Workspace Resolution:** Configures virtual `/sandbox/` path mapping to the local workspace volume, with **Session ID Auto-Stripping** to prevent double-session path nesting.
 * **Dynamic S3/R2 Asset Self-Healing:** Prevents publishing errors by dynamically parsing the Cloudflare R2 bucket configuration and auto-healing token hash truncations in attachment links.
 * **Multi-Platform Aspect Formatter:** Automatically formats final media deliverables using localized social media layout templates and platform ratios.
 * **Context Window Optimization:** Operates locally on a 42,000 token limit using dynamic schema lazy-loading (on-demand MCP tool loading) and strict message boundaries to prevent context bloat.
@@ -360,6 +362,16 @@ python3 test_workflow_execution.py --workflow text-image --prompt "A beautiful d
 * **Execute full Image-to-Image pipeline:**
 ```bash
 python3 test_workflow_execution.py --workflow image-image --prompt "Make the image look like an oil painting" --image /path/to/local/source.png
+```
+
+* **Execute full Text-to-Video pipeline (LTX Model):**
+```bash
+python3 test_workflow_execution.py --workflow text-video --prompt "A fluffy cat dancing under colorful disco lights, 15 seconds"
+```
+
+* **Execute full Image-to-Video animation pipeline (LTX Model):**
+```bash
+python3 test_workflow_execution.py --workflow image_text-video --prompt "Animate this cat dancing" --image /path/to/local/source.png
 ```
 
 ---

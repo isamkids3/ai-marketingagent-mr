@@ -54,42 +54,170 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     scrollToBottom();
   }, [messages, isLoading]);
 
+  const handleDownload = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error("Failed to download file:", error);
+      window.open(url, "_blank");
+    }
+  };
+
+  const getFileType = (url: string) => {
+    const cleanUrl = url.split(/[?#]/)[0];
+    if (/\.(?:png|jpg|jpeg|gif|webp)$/i.test(cleanUrl) || cleanUrl.includes("image/")) {
+      return "image";
+    }
+    if (/\.(?:mp4|webm|mov)$/i.test(cleanUrl) || cleanUrl.includes("video/")) {
+      return "video";
+    }
+    if (/\.(?:pdf)$/i.test(cleanUrl)) {
+      return "pdf";
+    }
+    if (/\.(?:md|markdown)$/i.test(cleanUrl)) {
+      return "markdown";
+    }
+    if (/\.(?:txt|csv|json)$/i.test(cleanUrl)) {
+      return "text";
+    }
+    return "document";
+  };
+
+  const renderMedia = (url: string, caption: string, key: string, isVideo: boolean) => {
+    const filename = url.split("/").pop() || "downloaded-asset";
+    return (
+      <div 
+        key={key} 
+        className="my-4 rounded-xl overflow-hidden border border-slate-800 bg-slate-950/40 shadow-xl max-w-lg hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/5 transition-all duration-300"
+      >
+        {isVideo ? (
+          <video src={url} controls playsInline className="w-full h-auto object-cover max-h-[400px] bg-slate-950" />
+        ) : (
+          <img 
+            src={url} 
+            alt={caption || "Generated Visual"} 
+            className="w-full h-auto object-cover max-h-[400px] cursor-pointer" 
+            onClick={() => window.open(url, "_blank")}
+            title="Click to view full resolution"
+          />
+        )}
+        <div className="p-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between gap-4 select-none">
+          <span className="text-[11px] text-slate-400 font-semibold tracking-wide uppercase truncate">
+            {caption || (isVideo ? "Generated Video" : "Generated Image")}
+          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDownload(url, filename);
+            }}
+            className="p-1 rounded bg-slate-950 border border-slate-850 text-slate-400 hover:text-white hover:border-slate-700 hover:bg-slate-900 transition-all duration-300 flex items-center justify-center shrink-0"
+            title="Download Media"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3.5 h-3.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderDocCard = (url: string, label: string, key: string, fileType: string) => {
+    const filename = url.split("/").pop() || "downloaded-asset";
+    return (
+      <div 
+        key={key}
+        className="my-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-800 bg-slate-950/40 hover:border-slate-700/60 transition-all duration-300 max-w-lg"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-300 shrink-0">
+            {fileType === "pdf" ? (
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-rose-500">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m.75 12 3 3m0 0 3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+              </svg>
+            ) : fileType === "markdown" ? (
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-indigo-400">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+              </svg>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-amber-500">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h1.5m-1.5 3h2.25m-2.25-6h1.5m2.25-6.75h.008v.008H12v-.008Zm0 2.25h.008v.008H12v-.008Zm0 2.25h.008v.008H12v-.008Zm0 2.25h.008v.008H12v-.008Zm0 2.25h.008v.008H12v-.008Zm0 2.25h.008v.008H12v-.008Zm0 2.25h.008v.008H12v-.008Z" />
+              </svg>
+            )}
+          </div>
+          <div className="flex flex-col min-w-0">
+            <span className="text-sm font-semibold text-slate-200 truncate pr-2" title={filename}>
+              {label || filename}
+            </span>
+            <span className="text-[10px] text-slate-500 font-medium tracking-wide uppercase mt-0.5">
+              {fileType === "pdf" ? "PDF Document" : fileType === "markdown" ? "Markdown File" : "Generated Asset"}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+          <button 
+            onClick={() => window.open(url, "_blank")}
+            className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-850 hover:border-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition-all duration-300 flex items-center gap-1.5"
+            title="Preview file in new tab"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+            </svg>
+            Preview
+          </button>
+          <button 
+            onClick={() => handleDownload(url, filename)}
+            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shadow-lg shadow-indigo-600/10 hover:shadow-indigo-500/20 transition-all duration-300 flex items-center gap-1.5"
+            title="Download file"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3.5 h-3.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+            Download
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   // Format message text and resolve relative image paths to backend URL
   const formatText = (text: string) => {
     if (!text) return "";
     const trimmedText = text.trim();
     if (!trimmedText) return "";
 
-    // 1. Regex to match markdown images: ![caption](url)
+    // 1. Regex to match markdown images/videos: ![caption](url)
     const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
     let parts: any[] = [];
     let lastIndex = 0;
     let match;
 
     while ((match = imgRegex.exec(trimmedText)) !== null) {
-      // Add text before image
+      // Add text before image/video
       if (match.index > lastIndex) {
         parts.push(trimmedText.substring(lastIndex, match.index));
       }
 
       const caption = match[1];
       const url = resolveUrl(match[2], backendUrl);
+      const fileType = getFileType(url);
+      const isVideo = fileType === "video";
 
-      parts.push(
-        <div 
-          key={`img-${match.index}`} 
-          onClick={() => window.open(url, "_blank")}
-          className="my-4 rounded-xl overflow-hidden border border-slate-800 bg-slate-950/40 shadow-xl max-w-lg cursor-pointer hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/5 transition-all duration-300"
-          title="Click to view full resolution"
-        >
-          <img src={url} alt={caption || "Generated Visual"} className="w-full h-auto object-cover max-h-[400px]" />
-          {caption && (
-            <div className="p-3 bg-slate-900 border-t border-slate-800 text-[11px] text-slate-400 font-semibold tracking-wide uppercase select-none">
-              {caption}
-            </div>
-          )}
-        </div>
-      );
+      if (fileType === "image" || fileType === "video") {
+        parts.push(renderMedia(url, caption, `media-${match.index}`, isVideo));
+      } else {
+        parts.push(renderDocCard(url, caption, `doc-${match.index}`, fileType));
+      }
 
       lastIndex = imgRegex.lastIndex;
     }
@@ -98,8 +226,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       parts.push(trimmedText.substring(lastIndex));
     }
 
-    // 2. Process markdown links pointing to images: [caption](url)
-    const mdLinkImgRegex = /\[([^\]]*)\]\(([^)]*(?:\.(?:png|jpg|jpeg|gif|webp)|view\?filename=)[^)]*)\)/gi;
+    // 2. Process markdown links pointing to images/videos/documents: [caption](url)
+    const mdLinkRegex = /\[([^\]]*)\]\(([^)]*(?:\.(?:png|jpg|jpeg|gif|webp|mp4|webm|mov|pdf|md|markdown|txt|csv|json|docx|xlsx|pptx|zip)|view\?filename=|\/(?:sandbox|workspace|shares|gen-content)\/)[^)]*)\)/gi;
     let partsAfterMdLinks: any[] = [];
 
     for (const part of parts) {
@@ -112,7 +240,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       let lastSubIndex = 0;
       let subMatch;
 
-      while ((subMatch = mdLinkImgRegex.exec(part)) !== null) {
+      while ((subMatch = mdLinkRegex.exec(part)) !== null) {
         if (subMatch.index > lastSubIndex) {
           subParts.push(part.substring(lastSubIndex, subMatch.index));
         }
@@ -120,22 +248,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         const caption = subMatch[1];
         const rawUrl = subMatch[2];
         const resolvedUrl = resolveUrl(rawUrl, backendUrl);
+        const fileType = getFileType(resolvedUrl);
+        const isVideo = fileType === "video";
 
-        subParts.push(
-          <div 
-            key={`md-link-img-${subMatch.index}`} 
-            onClick={() => window.open(resolvedUrl, "_blank")}
-            className="my-4 rounded-xl overflow-hidden border border-slate-800 bg-slate-950/40 shadow-xl max-w-lg cursor-pointer hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/5 transition-all duration-300"
-            title="Click to view full resolution"
-          >
-            <img src={resolvedUrl} alt={caption || "Generated Visual"} className="w-full h-auto object-cover max-h-[400px]" />
-            <div className="p-3 bg-slate-900 border-t border-slate-800 text-[11px] text-slate-400 font-semibold tracking-wide uppercase select-none">
-              {caption || "Generated Asset"}
-            </div>
-          </div>
-        );
+        if (fileType === "image" || fileType === "video") {
+          subParts.push(renderMedia(resolvedUrl, caption, `md-link-media-${subMatch.index}`, isVideo));
+        } else {
+          subParts.push(renderDocCard(resolvedUrl, caption, `md-link-doc-${subMatch.index}`, fileType));
+        }
 
-        lastSubIndex = mdLinkImgRegex.lastIndex;
+        lastSubIndex = mdLinkRegex.lastIndex;
       }
 
       if (lastSubIndex < part.length) {
@@ -146,8 +268,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
     parts = partsAfterMdLinks;
 
-    // 3. Process raw image paths, absolute paths, or ComfyUI view URLs
-    const rawPathRegex = /(?:`|\(|\[)?((?:https?:\/\/[^\s`"'()\]]+)?(?:\/[^\s`"'()\]]*)?\/(?:sandbox|workspace|shares|gen-content)\/[^\s`"'\)\],]+\.(?:png|jpg|jpeg|gif|webp)(:\?[^\s`"'\)\],]*)?|(?:https?:\/\/[^\s`"'()\]]+)?\/view\?filename=[^\s`"'\)\],]+)(?:`|\)|\])?/gi;
+    // 3. Process raw paths, absolute paths, or ComfyUI view URLs (images/videos/documents)
+    const rawPathRegex = /(?:`|\(|\[)?((?:https?:\/\/[^\s`"'()\]]+)?(?:\/[^\s`"'()\]]*)?\/(?:sandbox|workspace|shares|gen-content)\/[^\s`"'\)\],]+\.(?:png|jpg|jpeg|gif|webp|mp4|webm|mov|pdf|md|markdown|txt|csv|json|docx|xlsx|pptx|zip)(:\?[^\s`"'\)\],]*)?|(?:https?:\/\/[^\s`"'()\]]+)?\/view\?filename=[^\s`"'\)\],]+)(?:`|\)|\])?/gi;
     let partsAfterRawPaths: any[] = [];
 
     for (const part of parts) {
@@ -167,20 +289,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
         const rawUrl = subMatch[1];
         const resolvedUrl = resolveUrl(rawUrl, backendUrl);
+        const fileType = getFileType(resolvedUrl);
+        const isVideo = fileType === "video";
 
-        subParts.push(
-          <div 
-            key={`raw-path-img-${subMatch.index}`} 
-            onClick={() => window.open(resolvedUrl, "_blank")}
-            className="my-4 rounded-xl overflow-hidden border border-slate-800 bg-slate-950/40 shadow-xl max-w-lg cursor-pointer hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/5 transition-all duration-300"
-            title="Click to view full resolution"
-          >
-            <img src={resolvedUrl} alt="Generated Visual" className="w-full h-auto object-cover max-h-[400px]" />
-            <div className="p-3 bg-slate-900 border-t border-slate-800 text-[11px] text-slate-400 font-semibold tracking-wide uppercase select-none">
-              Generated Asset
-            </div>
-          </div>
-        );
+        if (fileType === "image" || fileType === "video") {
+          subParts.push(renderMedia(resolvedUrl, "", `raw-path-media-${subMatch.index}`, isVideo));
+        } else {
+          subParts.push(renderDocCard(resolvedUrl, "", `raw-path-doc-${subMatch.index}`, fileType));
+        }
 
         lastSubIndex = rawPathRegex.lastIndex;
       }
@@ -193,26 +309,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
     parts = partsAfterRawPaths;
 
-    // 4. Fallback: If no image was parsed, but the entire text is a path ending with an image extension
+    // 4. Fallback: If no media/doc was parsed, but the entire text is a path ending with a known extension
     if (parts.length === 1 && typeof parts[0] === "string") {
       const trimmed = parts[0].trim();
-      const hasImageExt = /\.(?:png|jpg|jpeg|gif|webp)(?:\?.*)?$/i.test(trimmed);
-      const isPathLike = trimmed.startsWith("/") || trimmed.startsWith("http://") || trimmed.startsWith("https://");
+      const fileType = getFileType(trimmed);
+      const isPathLike = trimmed.startsWith("/") || trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.includes("/sandbox/");
 
-      if (isPathLike && hasImageExt) {
+      if (isPathLike && fileType !== "text" && fileType !== "document") {
         const resolvedUrl = resolveUrl(trimmed, backendUrl);
-        return (
-          <div 
-            onClick={() => window.open(resolvedUrl, "_blank")}
-            className="rounded-xl overflow-hidden border border-slate-800 bg-slate-950/40 shadow-xl max-w-lg my-2 cursor-pointer hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/5 transition-all duration-300"
-            title="Click to view full resolution"
-          >
-            <img src={resolvedUrl} alt="Generated Asset" className="w-full h-auto object-cover max-h-[400px]" />
-            <div className="p-3 bg-slate-900 border-t border-slate-800 text-[11px] text-slate-400 font-semibold tracking-wide uppercase select-none">
-              Generated Asset
-            </div>
-          </div>
-        );
+        if (fileType === "image" || fileType === "video") {
+          return renderMedia(resolvedUrl, "", "fallback-media", fileType === "video");
+        } else {
+          return renderDocCard(resolvedUrl, "", "fallback-doc", fileType);
+        }
       }
     }
 

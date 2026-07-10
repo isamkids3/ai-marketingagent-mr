@@ -46,7 +46,7 @@ PLACEHOLDER_DESCRIPTIONS = {
 }
 DEFAULT_OUTPUT_KEYS = ("images", "image", "gifs", "gif")
 AUDIO_OUTPUT_KEYS = ("audio", "audios", "sound", "files")
-VIDEO_OUTPUT_KEYS = ("videos", "video", "mp4", "mov", "webm")
+VIDEO_OUTPUT_KEYS = ("videos", "video", "mp4", "mov", "webm", "gifs", "gif", "images", "image")
 
 
 class WorkflowManager:

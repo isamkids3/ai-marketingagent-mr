@@ -30,3 +30,7 @@ marketing_workspace_*/
 
 # ignore mcp debug file
 mcp_call_debug.json
+
+# ignore debugging files
+scratch/*
+

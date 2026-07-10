@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import tempfile
 import json
 import logging
@@ -183,14 +184,47 @@ class IdeogramPrompt(BaseModel):
 workspace_dir = tempfile.mkdtemp(prefix="marketing_workspace_")
 WorkspaceManager.set_workspace_dir(workspace_dir)
 
+class ThreadSafeFilesystemBackend(FilesystemBackend):
+    def __init__(self, root_dir: str | Path | None = None, **kwargs):
+        self._base_root = Path(root_dir).resolve() if root_dir else Path.cwd()
+        super().__init__(root_dir=root_dir, **kwargs)
+
+    @property
+    def cwd(self) -> Path:
+        thread_id = active_session_id.get() or "default"
+        return self._base_root / thread_id
+
+    @cwd.setter
+    def cwd(self, value):
+        pass
+
+    def _resolve_path(self, key: str) -> Path:
+        path_str = str(key)
+        if path_str.startswith("/sandbox/"):
+            path_str = path_str[len("/sandbox/"):]
+        elif path_str.startswith("sandbox/"):
+            path_str = path_str[len("sandbox/"):]
+
+        path_str = path_str.lstrip("/")
+
+        thread_id = active_session_id.get()
+        if thread_id:
+            if path_str == thread_id:
+                path_str = ""
+            elif path_str.startswith(thread_id + "/"):
+                path_str = path_str[len(thread_id) + 1:]
+
+        return super()._resolve_path(path_str)
+
 # Route "/workspace/" and "/sandbox/" virtual paths to actual local disk storage
 backend = CompositeBackend(
     default=StateBackend(),
     routes={
         "/workspace/": FilesystemBackend(root_dir=workspace_dir, virtual_mode=True),
-        "/sandbox/": FilesystemBackend(root_dir=str(BASE_WORKSPACE), virtual_mode=True),
+        "/sandbox/": ThreadSafeFilesystemBackend(root_dir=str(BASE_WORKSPACE), virtual_mode=True),
     }
 )
+
 
 
 # Instantiate model dynamically from environment (supports official OpenAI models and local servers)
@@ -445,6 +479,18 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
         async for chunk in super()._astream(pruned, stop, run_manager, **kwargs):
             yield chunk
 
+    def bind_tools(self, tools, **kwargs):
+        from langchain_core.tools import BaseTool
+        # Filter out the write_file tool to force the agent to use write_file_to_sandbox
+        filtered_tools = []
+        for t in tools:
+            name = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None) or getattr(t, "__name__", None)
+            if name == "write_file":
+                logger.info("TokenLimitingChatOpenAI: Filtering out built-in 'write_file' tool from model binding.")
+                continue
+            filtered_tools.append(t)
+        return super().bind_tools(filtered_tools, **kwargs)
+
 agent_llm = TokenLimitingChatOpenAI(
     model=openai_model,
     openai_api_key=openai_api_key,
@@ -472,9 +518,9 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - Suppress Preambles: To prevent output token limits from truncating your file writes, do NOT output any long preambles, thought paragraphs, or narration before calling file-saving tools. Immediately call the tool.
    - Chunked/Append Writing: If you need to write a large file (e.g. detailed campaign copy or documents over 1000 words / ~60 lines), you MUST write it sequentially in chunks. Call `write_file_to_sandbox` with `append=False` (default) for the first chunk, and then call it with `append=True` in subsequent steps for the remaining chunks.
 
-3. Image Generation Tool Selection Criteria:
+3. Image & Video Generation Tool Selection Criteria:
    Choose the appropriate generation tool based on the user's explicit intent:
-   - **Absolute Reference Constraint**: If NO reference image is uploaded or available in the session history, you MUST ALWAYS use the `text_image` tool. Do NOT attempt to call `image_image` or `image_reference_and_text_to_image` without a valid reference or initial image.
+   - **Absolute Reference Constraint**: If NO reference image is uploaded or available in the session history, you MUST ALWAYS use the `text_image` tool for images or `text_video` for videos. Do NOT attempt to call `image_image` or `image_reference_and_text_to_image` or `image_text_video` without a valid reference or initial image.
    - Use `text_image` when generating an original image from scratch solely from a text description.
    - **Images containing written text**: When generating an image that requires specific written words, typography, signs, logos, or labels within the visual itself, try to use the `text_image` generator tool (as it uses the Ideogram model, which is optimized for readable text rendering).
    - Use `image_reference_and_text_to_image` when the user wants to generate a brand new image using a reference image as a guide for layout, composition, character pose, or style transfer (ControlNet/IP-Adapter style).
@@ -482,13 +528,16 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - Use `image_image_3ref` when combining elements, styles, subjects, or backgrounds from THREE distinct reference images into a single generated output. **CRITICAL**: This tool is part of the `multi-reference-editing` skill. When calling `image_image_3ref`, you MUST first read the full instructions in `/workspace/skills/multi-reference-editing/SKILL.md` using the `read_file` tool to understand the specific prompting pattern (using literal tags `"image 1"`, `"image 2"`, and `"image 3"`).
    - Use `image_image` when performing Image-to-Image (Img2Img) refinement (e.g. adding elements, changing background, or altering style/details of an existing generated image while keeping its overall content). Set `init_image` to the previously generated image's `/sandbox/...` path from history.
    - Use `mask_image_image` when the user has uploaded a masked image (which contains both the image and a transparency mask, indicated by `[Uploaded Masked Image: /sandbox/...]`) and wants to perform targeted inpainting/editing on the masked area. Set `image` to the masked image's `/sandbox/...` path.
+   - Use `text_video` when generating a video from scratch solely from a text description. **CRITICAL**: This tool is part of the `video-generation-and-prompting` skill. When calling `text_video`, you MUST first read the full instructions in `/workspace/skills/video-generation-and-prompting/SKILL.md` using the `read_file` tool to understand best practices and formatting for LTX-Video.
+   - Use `image_text_video` when animating or generating a video using an initial reference image and a text prompt to guide the action. **CRITICAL**: This tool is part of the `video-generation-and-prompting` skill. When calling `image_text_video`, you MUST first read the full instructions in `/workspace/skills/video-generation-and-prompting/SKILL.md` using the `read_file` tool to understand how to focus prompting on motion and transitions rather than describing static elements.
+   - **Video Duration Limits**: The `duration` parameter of any video tool (represented in seconds) must never exceed 30 seconds. Always ensure the value is set between 1 and 30.
 
-4. Image Path Reporting — CRITICAL RULE: Every image generation tool (`text_image`, `image_reference_and_text_to_image`, `image_image`, `image_image_2ref`, `image_image_3ref`, `mask_image_image`) returns a tool observation that begins with `/sandbox/...`. This is the ONLY path you must report to the user. NEVER report the `asset_url`, `image_url`, or any URL from within the JSON body of the tool result — those are internal ComfyUI server URLs (e.g. `http://localhost:8188/view?filename=...` or `/output/...`) that the user cannot access. The tool observation starting with `/sandbox/` is the correct, user-accessible path. Always quote it verbatim.
+4. Image & Video Path Reporting — CRITICAL RULE: Every image and video generation tool (`text_image`, `image_reference_and_text_to_image`, `image_image`, `image_image_2ref`, `image_image_3ref`, `mask_image_image`, `text_video`, `image_text_video`) returns a tool observation that begins with `/sandbox/...`. This is the ONLY path you must report to the user. NEVER report the `asset_url`, `image_url`, or any URL from within the JSON body of the tool result — those are internal ComfyUI server URLs (e.g. `http://localhost:8188/view?filename=...` or `/output/...`) that the user cannot access. The tool observation starting with `/sandbox/` is the correct, user-accessible path. Always quote it verbatim.
 
 5. Single-Shot & Sequential Generation:
-   - When generating an image, you MUST define all requested visual elements (including typography, primary subjects, secondary details, and layout composition) in a single JSON prompt and trigger the generation workflow tool once. Do NOT call the generation or regeneration tools multiple times to build up the image iteratively one element at a time. Try your best to generate the image with ONE tool call only.
+   - When generating an image or video, you MUST define all requested visual elements in a single prompt and trigger the generation workflow tool once. Do NOT call the generation or regeneration tools multiple times to build up the asset iteratively one element at a time. Try your best to generate the asset with ONE tool call only.
    - **Strict Single-Call Rule for Multi-Reference Tools**: When using multi-reference editing tools (`image_image_2ref` and `image_image_3ref`), you are strictly forbidden from calling them multiple times or generating multiple versions/options in a single turn. You MUST call these tools exactly once per user request to avoid long generation times.
-   - **Generate Images One by One**: If a task requires generating multiple distinct images, do NOT call the image generation tools in parallel or make multiple generation tool calls in a single turn. You must trigger each generation sequentially, waiting for the first image generation to complete and return its path before starting the next image generation.
+   - **Generate Assets One by One**: If a task requires generating multiple distinct images or videos, do NOT call the generation tools in parallel or make multiple generation tool calls in a single turn. You must trigger each generation sequentially, waiting for the first generation to complete and return its path before starting the next.
 
 6. Progress Updates: Before the FIRST tool call only, output a single brief sentence explaining your plan. Do not narrate every subsequent tool call — let the results speak for themselves.
 
