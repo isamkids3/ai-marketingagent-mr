@@ -33,7 +33,7 @@ Users submit campaign briefs, prompts, or product asset photos, and the system i
 | **AI Agent Search Engine** | Tavily | Dynamic web-search integration for live market research and context enrichment. |
 | **Inference LLM** | Qwen 3.6 - 35B | Locally hosted large language model running inside a vLLM container for fast local orchestration. |
 | **Creator MCP API** | Python (Model Context Protocol) | Custom server based on [comfyui-mcp-server](https://github.com/joenorton/comfyui-mcp-server) exposing dynamic generation and registry tools. |
-| **Image Generation** | ComfyUI + Ideogram 4.0 + Flux 2.1 (Dev) | Locally hosted hardware-accelerated diffusion pipeline for high-fidelity asset rendering. |
+| **Image & Video Generation** | ComfyUI + Ideogram 4.0 + Flux 2.1 (Dev) + LTX-Video 0.9 | Locally hosted hardware-accelerated diffusion/transformer pipeline for high-fidelity asset rendering and 15s/30s cinematic animations. |
 | **Social Media Publisher** | Postiz (Next.js/NestJS) + Cloudflare R2 | Self-hosted social media scheduler and publisher integrated via S3-compatible cloud bucket storage. |
 
 ---
