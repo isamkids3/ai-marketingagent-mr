@@ -221,7 +221,7 @@ def register_workflow_generation_tools(
                 result = comfyui_client.run_custom_workflow(
                     workflow,
                     preferred_output_keys=definition.output_preferences,
-                    max_attempts=600,  # 10 min — allows slow models like Flux2 image-image (~155s)
+                    max_attempts=800,  # ~13 min — allows slow video generation models (~343s)
                 )
                 
                 # Format original_prompt for metadata registration

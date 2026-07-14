@@ -1,11 +1,14 @@
 import os
+import asyncio
 from pathlib import Path
 import tempfile
 import json
 import logging
 from typing import Optional, List, Dict, Any, Literal
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-load_dotenv()
+_dotenv_path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(dotenv_path=_dotenv_path, override=True)
 # pyrefly: ignore [missing-import]
 from deepagents import create_deep_agent
 # pyrefly: ignore [missing-import]
@@ -228,10 +231,7 @@ backend = CompositeBackend(
 
 
 # Instantiate model dynamically from environment (supports official OpenAI models and local servers)
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key or openai_api_key == "your-actual-openai-api-key-here":
-    openai_api_key = "mock-key-for-local-use"
-
+openai_api_key = os.getenv("OPENAI_API_KEY", "mock-key-for-local-use")
 openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
 openai_api_base = os.getenv("OPENAI_API_BASE")  # Will default to official OpenAI API if None
 
@@ -493,6 +493,8 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
 
 agent_llm = TokenLimitingChatOpenAI(
     model=openai_model,
+    api_key=openai_api_key,
+    base_url=openai_api_base,
     openai_api_key=openai_api_key,
     openai_api_base=openai_api_base,
     temperature=0.3,
@@ -644,14 +646,18 @@ active_user_words: ContextVar[set] = ContextVar("active_user_words", default=set
 class AgentSessionProxy:
     """
     A proxy wrapper for the compiled agent that intercepts ainvoke, invoke,
-    and astream_events calls to set the context-local MCP session and session_id.
+    and astream_events calls to set the context-local MCP session, session_id, and tone.
+    Each request receives a lightweight isolated proxy instance wrapping the shared raw agent graph.
     """
-    def __init__(self, agent):
+    def __init__(self, agent, sessions=None, session_id: str = "default", tone: Optional[str] = None):
         self.agent = agent
-        self.session = None
-        self.sessions = {}
-        self._session_id: str = "default"
-        self.tone: Optional[str] = None
+        self.sessions = sessions or {}
+        if isinstance(sessions, dict):
+            self.session = sessions.get("comfyui")
+        else:
+            self.session = sessions
+        self._session_id: str = session_id or "default"
+        self.tone: Optional[str] = tone
 
     def _extract_user_words(self, inputs) -> set:
         words = set()
@@ -706,61 +712,20 @@ class AgentSessionProxy:
         inputs_copy["messages"] = messages_copy
         return inputs_copy
 
-    async def ainvoke(self, inputs, config=None, **kwargs):
+    @asynccontextmanager
+    async def _session_context(self, inputs, config=None):
         inputs = self._inject_date_context(inputs)
-        token_mcp = active_mcp_session.set(self.session)
-        token_sessions = active_sessions.set(self.sessions or {})
-        token_sid = active_session_id.set(self._session_id or "default")
-        token_words = active_user_words.set(self._extract_user_words(inputs))
-        tone_map = {
-            "Strict Coder": 0.3,
-            "Professional": 0.6,
-            "Creative": 0.9
-        }
-        temp = tone_map.get(getattr(self, "tone", "Creative") or "Creative", 0.9)
-        token_temp = active_temperature.set(temp)
-        try:
-            return await self.agent.ainvoke(inputs, config, **kwargs)
-        finally:
-            active_mcp_session.reset(token_mcp)
-            active_sessions.reset(token_sessions)
-            active_session_id.reset(token_sid)
-            active_user_words.reset(token_words)
-            active_temperature.reset(token_temp)
-
-    async def invoke(self, inputs, config=None, **kwargs):
-        inputs = self._inject_date_context(inputs)
-        token_mcp = active_mcp_session.set(self.session)
-        token_sessions = active_sessions.set(self.sessions or {})
-        token_sid = active_session_id.set(self._session_id or "default")
-        token_words = active_user_words.set(self._extract_user_words(inputs))
-        tone_map = {
-            "Strict Coder": 0.3,
-            "Professional": 0.6,
-            "Creative": 0.9
-        }
-        temp = tone_map.get(getattr(self, "tone", "Creative") or "Creative", 0.9)
-        token_temp = active_temperature.set(temp)
-        try:
-            return await self.agent.invoke(inputs, config, **kwargs)
-        finally:
-            active_mcp_session.reset(token_mcp)
-            active_sessions.reset(token_sessions)
-            active_session_id.reset(token_sid)
-            active_user_words.reset(token_words)
-            active_temperature.reset(token_temp)
-
-    async def astream_events(self, inputs, config=None, **kwargs):
-        """Proxy astream_events while ensuring the MCP session context var is set."""
-        inputs = self._inject_date_context(inputs)
-        # Extract thread_id from config to set session_id
-        sid = "default"
+        sid = self._session_id or "default"
         if config and isinstance(config, dict):
-            sid = config.get("configurable", {}).get("thread_id", "default")
+            cfg_sid = config.get("configurable", {}).get("thread_id")
+            if cfg_sid:
+                sid = cfg_sid
+
         token_mcp = active_mcp_session.set(self.session)
         token_sessions = active_sessions.set(self.sessions or {})
         token_sid = active_session_id.set(sid)
         token_words = active_user_words.set(self._extract_user_words(inputs))
+
         tone_map = {
             "Strict Coder": 0.3,
             "Professional": 0.6,
@@ -768,22 +733,36 @@ class AgentSessionProxy:
         }
         temp = tone_map.get(getattr(self, "tone", "Creative") or "Creative", 0.9)
         token_temp = active_temperature.set(temp)
+
         try:
-            async for event in self.agent.astream_events(inputs, config=config, **kwargs):
-                yield event
+            yield inputs
         finally:
             active_mcp_session.reset(token_mcp)
             active_sessions.reset(token_sessions)
             active_session_id.reset(token_sid)
             active_user_words.reset(token_words)
             active_temperature.reset(token_temp)
+
+    async def ainvoke(self, inputs, config=None, **kwargs):
+        async with self._session_context(inputs, config) as ctx_inputs:
+            return await self.agent.ainvoke(ctx_inputs, config, **kwargs)
+
+    async def invoke(self, inputs, config=None, **kwargs):
+        async with self._session_context(inputs, config) as ctx_inputs:
+            return await self.agent.invoke(ctx_inputs, config, **kwargs)
+
+    async def astream_events(self, inputs, config=None, **kwargs):
+        """Proxy astream_events while ensuring the MCP session context vars are set."""
+        async with self._session_context(inputs, config) as ctx_inputs:
+            async for event in self.agent.astream_events(ctx_inputs, config=config, **kwargs):
+                yield event
 
     def __getattr__(self, name):
         return getattr(self.agent, name)
 
 
-# Keep cached agent reference
-_cached_agent = None
+# Keep cached raw agent reference
+_cached_raw_agent = None
 
 def connect_to_mcp_server():
     """
@@ -807,7 +786,7 @@ def connect_to_mcp_server():
         s.connect(("127.0.0.1", port))
         s.close()
         logger.info(f"Connecting to MCP server via Streamable HTTP at {mcp_url}")
-        return streamablehttp_client(mcp_url, timeout=300)
+        return streamablehttp_client(mcp_url, timeout=800, sse_read_timeout=1200)
     except Exception:
         logger.warning("Could not connect to MCP server via Streamable HTTP. Falling back to stdio.")
 
@@ -831,7 +810,74 @@ def connect_to_mcp_server():
     return stdio_client(server_params)
 
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
+
+_global_mcp_sessions: Dict[str, Any] = {}
+_mcp_session_lock = asyncio.Lock()
+
+# Holds the underlying transport context managers (streamablehttp_client /
+# stdio_client) alive for the lifetime of the app. If these are entered via
+# __aenter__() but never referenced anywhere, Python garbage-collects them
+# while their streams are still in use, which tears down their anyio task
+# group from an unrelated task and can throw spurious CancelledErrors into
+# whatever else happens to be running on the event loop at that moment.
+_mcp_exit_stack = AsyncExitStack()
+
+async def get_global_mcp_sessions() -> Dict[str, ClientSession]:
+    """
+    Retrieves or establishes global persistent MCP client sessions (comfyui, postiz).
+    Re-establishes dropped or closed sessions automatically.
+    """
+    global _global_mcp_sessions
+    async with _mcp_session_lock:
+        comfy_healthy = False
+        if "comfyui" in _global_mcp_sessions:
+            try:
+                await _global_mcp_sessions["comfyui"].list_tools()
+                comfy_healthy = True
+            except Exception as e:
+                logger.warning(f"Cached ComfyUI MCP session connection lost: {e}. Reconnecting...")
+                comfy_healthy = False
+
+        if not comfy_healthy:
+            comfyui_ctx = connect_to_mcp_server()
+            conn = await _mcp_exit_stack.enter_async_context(comfyui_ctx)
+            c_read, c_write = conn[0], conn[1]
+            comfy_sess = await _mcp_exit_stack.enter_async_context(ClientSession(c_read, c_write))
+            await comfy_sess.initialize()
+            _global_mcp_sessions["comfyui"] = comfy_sess
+            logger.info("Established persistent global ComfyUI MCP session.")
+
+        postiz_api_key = os.getenv("POSTIZ_API_KEY")
+        if postiz_api_key and postiz_api_key.strip():
+            postiz_healthy = False
+            if "postiz" in _global_mcp_sessions:
+                try:
+                    await _global_mcp_sessions["postiz"].list_tools()
+                    postiz_healthy = True
+                except Exception as e:
+                    logger.warning(f"Cached Postiz MCP session connection lost: {e}. Reconnecting...")
+                    postiz_healthy = False
+
+            if not postiz_healthy:
+                postiz_url = os.getenv("POSTIZ_MCP_URL", "https://api.postiz.com/mcp").rstrip("/")
+                headers = {"Authorization": f"Bearer {postiz_api_key}"}
+                postiz_ctx = streamablehttp_client(postiz_url, headers=headers, timeout=800, sse_read_timeout=1200)
+                try:
+                    p_conn = await _mcp_exit_stack.enter_async_context(postiz_ctx)
+                    p_read, p_write = p_conn[0], p_conn[1]
+                    postiz_sess = await _mcp_exit_stack.enter_async_context(ClientSession(p_read, p_write))
+                    await postiz_sess.initialize()
+                    _global_mcp_sessions["postiz"] = postiz_sess
+                    logger.info("Established persistent global Postiz MCP session.")
+                except Exception as e:
+                    logger.error(f"Failed to connect to Postiz MCP Server: {e}")
+                    _global_mcp_sessions.pop("postiz", None)
+        else:
+            _global_mcp_sessions.pop("postiz", None)
+
+        return _global_mcp_sessions
+
 
 @asynccontextmanager
 async def connect_to_all_mcp_servers():
@@ -839,45 +885,8 @@ async def connect_to_all_mcp_servers():
     Connects to both ComfyUI MCP and Postiz MCP servers concurrently.
     Yields a dictionary of active sessions: {"comfyui": comfyui_session, "postiz": postiz_session}
     """
-    # 1. Connect to ComfyUI MCP Server
-    comfyui_ctx = connect_to_mcp_server()
-    async with comfyui_ctx as comfyui_conn:
-        if len(comfyui_conn) == 3:
-            c_read, c_write, _ = comfyui_conn
-        else:
-            c_read, c_write = comfyui_conn
-            
-        async with ClientSession(c_read, c_write) as comfyui_session:
-            await comfyui_session.initialize()
-            sessions = {"comfyui": comfyui_session}
-            
-            # 2. Connect to Postiz MCP Server (if API key is set)
-            postiz_api_key = os.getenv("POSTIZ_API_KEY")
-            if postiz_api_key and postiz_api_key.strip():
-                postiz_url = os.getenv("POSTIZ_MCP_URL", "https://api.postiz.com/mcp").rstrip("/")
-                logger.info(f"Connecting to Postiz MCP Server at {postiz_url}...")
-                
-                headers = {"Authorization": f"Bearer {postiz_api_key}"}
-                postiz_ctx = streamablehttp_client(postiz_url, headers=headers, timeout=300)
-                
-                try:
-                    async with postiz_ctx as postiz_conn:
-                        if len(postiz_conn) == 3:
-                            p_read, p_write, _ = postiz_conn
-                        else:
-                            p_read, p_write = postiz_conn
-                        async with ClientSession(p_read, p_write) as postiz_session:
-                            await postiz_session.initialize()
-                            sessions["postiz"] = postiz_session
-                            logger.info("Successfully connected to Postiz MCP Server!")
-                            yield sessions
-                except Exception as e:
-                    logger.error(f"Failed to connect to Postiz MCP Server: {e}")
-                    # If Postiz fails, gracefully proceed with just ComfyUI
-                    yield sessions
-            else:
-                logger.info("Postiz MCP Server not configured (missing POSTIZ_API_KEY).")
-                yield sessions
+    sessions = await get_global_mcp_sessions()
+    yield sessions
 
 
 def get_ngrok_url() -> Optional[str]:
@@ -896,15 +905,16 @@ def get_ngrok_url() -> Optional[str]:
 
 
 def rewrite_local_to_public_url(val: Any) -> Any:
+    base_ws_prefix = f"{str(BASE_WORKSPACE).rstrip('/')}/"
     if isinstance(val, str):
-        if val.startswith("/sandbox/") or "/sandbox/" in val or val.startswith("/Users/adamdali/Documents/AI_Agent_MR/gen-content/"):
+        if val.startswith("/sandbox/") or "/sandbox/" in val or val.startswith(base_ws_prefix):
             sandbox_relative_path = ""
             if val.startswith("/sandbox/"):
                 sandbox_relative_path = val.replace("/sandbox/", "", 1)
             elif "/sandbox/" in val:
                 sandbox_relative_path = val.split("/sandbox/", 1)[1]
-            elif val.startswith("/Users/adamdali/Documents/AI_Agent_MR/gen-content/"):
-                sandbox_relative_path = val.replace("/Users/adamdali/Documents/AI_Agent_MR/gen-content/", "", 1)
+            elif val.startswith(base_ws_prefix):
+                sandbox_relative_path = val.replace(base_ws_prefix, "", 1)
             
             if sandbox_relative_path:
                 ngrok_url = get_ngrok_url()
@@ -913,7 +923,8 @@ def rewrite_local_to_public_url(val: Any) -> Any:
                     logger.info(f"Rewrote local path to ngrok URL: {val} -> {public_url}")
                     return public_url
                 else:
-                    public_url = f"http://192.168.5.184:8000/sandbox/{sandbox_relative_path}"
+                    local_lan = os.getenv("LOCAL_LAN_URL", "http://192.168.5.184:8000").rstrip("/")
+                    public_url = f"{local_lan}/sandbox/{sandbox_relative_path}"
                     logger.warning(f"ngrok not running. Rewrote local path to host LAN IP: {val} -> {public_url}")
                     return public_url
     elif isinstance(val, list):
@@ -1329,64 +1340,32 @@ def mcp_tool_to_langchain(mcp_tool, session: ClientSession):
                 resolved_kwargs["socialPost"] = adapt_postiz_schedule_payload(resolved_kwargs["socialPost"])
 
         # 2. Invoke MCP Tool directly on the session closure (with self-healing fallback)
-        try:
-            from datetime import datetime
-            with open("/Users/adamdali/Documents/AI_Agent_MR/backend/mcp_call_debug.json", "w") as dbg:
-                json.dump({
-                    "tool_name": tool_name,
-                    "args": resolved_kwargs,
-                    "timestamp": datetime.now().isoformat()
-                }, dbg, indent=2, default=str)
-        except Exception as dbg_err:
-            logger.warning(f"Failed to write mcp_call_debug.json: {dbg_err}")
-
         logger.info(f"Calling MCP tool '{tool_name}' with args {resolved_kwargs}")
         import anyio
-        
+
         # Resolve active session dynamically from ContextVar to prevent closed session reuse
         is_postiz = "postiz" in tool_name or tool_name in ["integrationSchedulePostTool", "integrationList", "uploadFromUrlTool", "integrationSchema", "triggerTool", "ask_postiz"]
         session_key = "postiz" if is_postiz else "comfyui"
         active_sess = active_sessions.get().get(session_key)
         target_session = active_sess if active_sess is not None else session
-        
+
         try:
             result = await target_session.call_tool(tool_name, resolved_kwargs)
         except (anyio.ClosedResourceError, Exception) as e:
             logger.warning(f"MCP tool call failed with {type(e).__name__}: {e}. Triggering dynamic self-healing reconnection...")
-            
-            # Check if this is a Postiz tool
-            is_postiz = "postiz" in tool_name or tool_name in ["integrationSchedulePostTool", "integrationList", "uploadFromUrlTool", "integrationSchema", "triggerTool", "ask_postiz"]
-            if is_postiz:
-                postiz_api_key = os.getenv("POSTIZ_API_KEY")
-                postiz_url = os.getenv("POSTIZ_MCP_URL", "https://api.postiz.com/mcp").rstrip("/")
-                if postiz_api_key:
-                    headers = {"Authorization": f"Bearer {postiz_api_key}"}
-                    postiz_ctx = streamablehttp_client(postiz_url, headers=headers, timeout=300)
-                    try:
-                        async with postiz_ctx as postiz_conn:
-                            r, w = postiz_conn[:2]
-                            async with ClientSession(r, w) as new_session:
-                                await new_session.initialize()
-                                logger.info(f"Reconnected successfully to Postiz MCP! Retrying tool call '{tool_name}'...")
-                                result = await new_session.call_tool(tool_name, resolved_kwargs)
-                    except Exception as reconn_err:
-                        logger.error(f"Failed to reconnect to Postiz MCP: {reconn_err}")
-                        raise e
-                else:
+            try:
+                # Reuse the same pooled-session health-check/reconnect logic as the main
+                # connection path, so a successful reconnect here is persisted back into
+                # the global pool instead of being reconnected-and-discarded every time.
+                refreshed_sessions = await get_global_mcp_sessions()
+                new_session = refreshed_sessions.get(session_key)
+                if new_session is None:
                     raise e
-            else:
-                # ComfyUI reconnection
-                comfyui_ctx = connect_to_mcp_server()
-                try:
-                    async with comfyui_ctx as comfyui_conn:
-                        r, w = comfyui_conn[:2]
-                        async with ClientSession(r, w) as new_session:
-                            await new_session.initialize()
-                            logger.info(f"Reconnected successfully to ComfyUI MCP! Retrying tool call '{tool_name}'...")
-                            result = await new_session.call_tool(tool_name, resolved_kwargs)
-                except Exception as reconn_err:
-                    logger.error(f"Failed to reconnect to ComfyUI MCP: {reconn_err}")
-                    raise e
+                logger.info(f"Reconnected successfully to {'Postiz' if is_postiz else 'ComfyUI'} MCP! Retrying tool call '{tool_name}'...")
+                result = await new_session.call_tool(tool_name, resolved_kwargs)
+            except Exception as reconn_err:
+                logger.error(f"Failed to reconnect to {'Postiz' if is_postiz else 'ComfyUI'} MCP: {reconn_err}")
+                raise e
         
         if result.isError:
             error_msg = ""
@@ -1472,8 +1451,9 @@ async def get_marketing_agent(sessions, session_id: str = "default", tone: Optio
     """
     Dynamically discover, list, and register tools exposed by the MCP server,
     compiling the Deep Agent with dynamic tools and local utilities.
+    Returns an isolated AgentSessionProxy wrapping the compiled raw agent graph.
     """
-    global _cached_agent
+    global _cached_raw_agent
     
     # Handle single ClientSession passed for backward compatibility
     if not isinstance(sessions, dict):
@@ -1483,61 +1463,51 @@ async def get_marketing_agent(sessions, session_id: str = "default", tone: Optio
         
     comfyui_session = sessions_dict["comfyui"]
     
-    if _cached_agent is not None:
-        _cached_agent.session = comfyui_session
-        _cached_agent.sessions = sessions_dict
-        _cached_agent._session_id = session_id
-        _cached_agent.tone = tone
-        return _cached_agent
+    if _cached_raw_agent is None:
+        logger.info("Discovering tools from ComfyUI MCP Server...")
+        comfyui_tools_list = await comfyui_session.list_tools()
         
-    logger.info("Discovering tools from ComfyUI MCP Server...")
-    comfyui_tools_list = await comfyui_session.list_tools()
-    
-    # Convert MCP tools to LangChain tools (excluding view_image and read_user_document to prevent conflicts)
-    lc_mcp_tools = [mcp_tool_to_langchain(t, comfyui_session) for t in comfyui_tools_list.tools if t.name not in ("view_image", "read_user_document")]
-    
-    # Check if Postiz session is available
-    if "postiz" in sessions_dict:
-        logger.info("Discovering tools from Postiz MCP Server...")
-        postiz_session = sessions_dict["postiz"]
-        try:
-            postiz_tools_list = await postiz_session.list_tools()
-            lc_postiz_tools = [mcp_tool_to_langchain(t, postiz_session) for t in postiz_tools_list.tools if t.name not in ("schedulePostTool",)]
-            lc_mcp_tools.extend(lc_postiz_tools)
-            logger.info(f"Registered {len(lc_postiz_tools)} tools from Postiz MCP server dynamically.")
-        except Exception as e:
-            logger.error(f"Failed to list tools from Postiz MCP: {e}")
-            
-    logger.info(f"Registered {len(lc_mcp_tools)} tools from MCP servers dynamically: {[t.name for t in lc_mcp_tools]}")
-    
-    # Combine with local backend tools
-    all_tools = [
-        internet_search,
-        write_file_to_sandbox,
-        read_user_document_tool,
-        generate_pdf_in_sandbox
-    ] + lc_mcp_tools
-    
-    import shutil
-    # Copy skills folder to the ephemeral workspace directory so SkillsMiddleware can load them via the backend
-    src_skills = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "skills")
-    dst_skills = os.path.join(workspace_dir, "skills")
-    if os.path.exists(src_skills):
-        shutil.copytree(src_skills, dst_skills, dirs_exist_ok=True)
-        logger.info(f"Copied agent skills from {src_skills} to {dst_skills}")
-    else:
-        logger.warning(f"Skills source folder not found at {src_skills}")
- 
-    raw_agent = create_deep_agent(
-        model=agent_llm,
-        tools=all_tools,
-        backend=backend,
-        system_prompt=SYSTEM_PROMPT,
-        skills=["/workspace/skills"]
-    )
-    _cached_agent = AgentSessionProxy(raw_agent)
-    _cached_agent.session = comfyui_session
-    _cached_agent.sessions = sessions_dict
-    _cached_agent._session_id = session_id
-    _cached_agent.tone = tone
-    return _cached_agent
+        # Convert MCP tools to LangChain tools (excluding view_image and read_user_document to prevent conflicts)
+        lc_mcp_tools = [mcp_tool_to_langchain(t, comfyui_session) for t in comfyui_tools_list.tools if t.name not in ("view_image", "read_user_document")]
+        
+        # Check if Postiz session is available
+        if "postiz" in sessions_dict:
+            logger.info("Discovering tools from Postiz MCP Server...")
+            postiz_session = sessions_dict["postiz"]
+            try:
+                postiz_tools_list = await postiz_session.list_tools()
+                lc_postiz_tools = [mcp_tool_to_langchain(t, postiz_session) for t in postiz_tools_list.tools if t.name not in ("schedulePostTool",)]
+                lc_mcp_tools.extend(lc_postiz_tools)
+                logger.info(f"Registered {len(lc_postiz_tools)} tools from Postiz MCP server dynamically.")
+            except Exception as e:
+                logger.error(f"Failed to list tools from Postiz MCP: {e}")
+                
+        logger.info(f"Registered {len(lc_mcp_tools)} tools from MCP servers dynamically: {[t.name for t in lc_mcp_tools]}")
+        
+        # Combine with local backend tools
+        all_tools = [
+            internet_search,
+            write_file_to_sandbox,
+            read_user_document_tool,
+            generate_pdf_in_sandbox
+        ] + lc_mcp_tools
+        
+        import shutil
+        # Copy skills folder to the ephemeral workspace directory so SkillsMiddleware can load them via the backend
+        src_skills = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "skills")
+        dst_skills = os.path.join(workspace_dir, "skills")
+        if os.path.exists(src_skills):
+            shutil.copytree(src_skills, dst_skills, dirs_exist_ok=True)
+            logger.info(f"Copied agent skills from {src_skills} to {dst_skills}")
+        else:
+            logger.warning(f"Skills source folder not found at {src_skills}")
+     
+        _cached_raw_agent = create_deep_agent(
+            model=agent_llm,
+            tools=all_tools,
+            backend=backend,
+            system_prompt=SYSTEM_PROMPT,
+            skills=["/workspace/skills"]
+        )
+
+    return AgentSessionProxy(_cached_raw_agent, sessions=sessions_dict, session_id=session_id, tone=tone)

@@ -1,3 +1,8 @@
+from pathlib import Path
+from dotenv import load_dotenv
+_dotenv_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=_dotenv_path, override=True)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -72,17 +77,7 @@ os.makedirs(shares_dir, exist_ok=True)
 app.mount("/shares", StaticFiles(directory=shares_dir), name="shares")
 
 # Sandbox Environment Setup (Additive)
-from pathlib import Path
-from dotenv import load_dotenv
-
-load_dotenv()
-
-BASE_WORKSPACE = Path(os.getenv("SHARED_WORKSPACE_ROOT", str(Path(__file__).parent.parent / "gen-content"))).resolve()
-try:
-    os.makedirs(BASE_WORKSPACE, exist_ok=True)
-except Exception as e:
-    import logging
-    logging.warning(f"Could not create BASE_WORKSPACE: {e}")
+from app.agent.tools import BASE_WORKSPACE
 
 # Mount the sandbox static folder
 app.mount("/sandbox", StaticFiles(directory=str(BASE_WORKSPACE)), name="sandbox")

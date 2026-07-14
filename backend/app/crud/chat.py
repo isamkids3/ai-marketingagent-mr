@@ -30,10 +30,11 @@ async def get_sessions_by_user(
     return list(result.scalars().all())
 
 async def create_session(
-    db: AsyncSession, user_id: int, session_in: ChatSessionCreate
+    db: AsyncSession, user_id: int, session_in: ChatSessionCreate, custom_id: Optional[uuid.UUID] = None
 ) -> ChatSession:
     """Create a new chat session."""
     db_session = ChatSession(
+        id=custom_id or uuid.uuid4(),
         user_id=user_id,
         title=session_in.title or "New Chat Thread",
     )

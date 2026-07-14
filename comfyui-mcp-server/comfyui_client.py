@@ -55,7 +55,7 @@ class ComfyUIClient:
             logger.warning(f"Error fetching models: {e}")
             return []
 
-    def run_custom_workflow(self, workflow: Dict[str, Any], preferred_output_keys: Sequence[str] | None = None, max_attempts: int = 120):
+    def run_custom_workflow(self, workflow: Dict[str, Any], preferred_output_keys: Sequence[str] | None = None, max_attempts: int = 800):
         if preferred_output_keys is None:
             preferred_output_keys = ("images", "image", "gifs", "gif", "audio", "audios", "files")
 
