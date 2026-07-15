@@ -219,21 +219,110 @@ Ensure your ComfyUI models folder matches the directory structure below:
 
 ```
 models/
+├── LLM
+├── audio_encoders
+│   └── put_audio_encoder_models_here
+├── background_removal
+│   └── put_background_removal_models_here
+├── checkpoints
+│   ├── ltx-2.3-22b-dev-fp8.safetensors
+│   └── put_checkpoints_here
+├── clip
+│   └── put_clip_or_text_encoder_models_here
+├── clip_vision
+│   └── put_clip_vision_models_here
+├── configs
+│   ├── anything_v3.yaml
+│   ├── v1-inference.yaml
+│   ├── v1-inference_clip_skip_2.yaml
+│   ├── v1-inference_clip_skip_2_fp16.yaml
+│   ├── v1-inference_fp16.yaml
+│   ├── v1-inpainting-inference.yaml
+│   ├── v2-inference-v.yaml
+│   ├── v2-inference-v_fp32.yaml
+│   ├── v2-inference.yaml
+│   ├── v2-inference_fp32.yaml
+│   └── v2-inpainting-inference.yaml
+├── controlnet
+│   └── put_controlnets_and_t2i_here
+├── detection
+│   └── put_detection_models_here
+├── diffusers
+│   └── put_diffusers_models_here
 ├── diffusion_models
 │   ├── flux2_dev_fp8mixed.safetensors
 │   ├── ideogram4_fp8_scaled.safetensors
-│   └── ideogram4_unconditional_fp8_scaled.safetensors
+│   ├── ideogram4_unconditional_fp8_scaled.safetensors
+│   ├── put_diffusion_model_files_here
+│   ├── qwen_image_2512_bf16.safetensors
+│   ├── qwen_image_edit_fp8_e4m3fn.safetensors
+│   ├── wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors
+│   ├── wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors
+│   ├── wan2.2_ti2v_5B_fp16.safetensors
+│   └── z_image_turbo_bf16.safetensors
+├── embeddings
+│   └── put_embeddings_or_textual_inversion_concepts_here
+├── frame_interpolation
+│   └── put_frame_interpolation_models_here
+├── geometry_estimation
+│   └── put_geometry_estimation_models_here
+├── gligen
+│   └── put_gligen_models_here
+├── hypernetworks
+│   └── put_hypernetworks_here
+├── latent_upscale_models
+│   ├── ltx-2.3-spatial-upscaler-x2-1.1.safetensors
+│   └── put_latent_upscale_models_here
+├── llm
+│   └── GGUF
+│       └── Qwen
+│           └── Qwen3-VL-8B-Instruct-GGUF
 ├── loras
 │   ├── Flux2TurboComfyv2.safetensors
-│   └── Flux_2-Turbo-LoRA_comfyui.safetensors
+│   ├── Flux_2-Turbo-LoRA_comfyui.safetensors
+│   ├── Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors
+│   ├── Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors
+│   ├── gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors
+│   ├── ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors
+│   ├── put_loras_here
+│   ├── wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors
+│   └── wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors
+├── model_patches
+│   └── put_model_patches_here
+├── optical_flow
+│   └── put_optical_flow_models_here
+├── photomaker
+│   └── put_photomaker_models_here
+├── style_models
+│   └── put_t2i_style_model_here
 ├── text_encoders
+│   ├── gemma_3_12B_it_fp4_mixed.safetensors
 │   ├── mistral_3_small_flux2_bf16.safetensors
 │   ├── mistral_3_small_flux2_fp8.safetensors
-│   └── qwen3vl_8b_fp8_scaled.safetensors
-└── vae
-    ├── flux2-vae.safetensors
-    └── full_encoder_small_decoder.safetensors
+│   ├── put_text_encoder_files_here
+│   ├── qwen3vl_8b_fp8_scaled.safetensors
+│   ├── qwen_2.5_vl_7b_fp8_scaled.safetensors
+│   ├── qwen_3_4b.safetensors
+│   └── umt5_xxl_fp8_e4m3fn_scaled.safetensors
+├── ultralytics
+├── unet
+│   └── put_unet_files_here
+├── upscale_models
+│   └── put_esrgan_and_other_upscale_models_here
+├── vae
+│   ├── ae.safetensors
+│   ├── flux2-vae.safetensors
+│   ├── full_encoder_small_decoder.safetensors
+│   ├── put_vae_here
+│   ├── qwen_image_vae.safetensors
+│   ├── wan2.2_vae.safetensors
+│   └── wan_2.1_vae.safetensors
+├── vae_approx
+│   └── put_taesd_encoder_pth_and_taesd_decoder_pth_here
 ```
+
+> [!NOTE]
+> Please ignore any extra or irrelevant model files listed in the directory layout above — those were included for experimental testing. Only the core checkpoints, text encoders, VAEs, and LoRAs required for active generation tools are necessary.
 
 ---
 
