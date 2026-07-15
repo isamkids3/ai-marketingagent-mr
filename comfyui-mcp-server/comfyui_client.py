@@ -499,7 +499,19 @@ class ComfyUIClient:
                         "type": output_type,
                         "asset_url": asset_url
                     }
-        
+
+        # Fallback for text-only workflows (e.g. PreviewAny, QwenVL text analysis)
+        for node_id, node_output in outputs.items():
+            if isinstance(node_output, dict):
+                for text_key in ("text", "string", "text_output"):
+                    if text_key in node_output:
+                        return {
+                            "filename": "",
+                            "subfolder": "",
+                            "type": "text",
+                            "asset_url": ""
+                        }
+
         raise Exception(
             f"No outputs matched preferred keys: {preferred_output_keys}. "
             f"Available outputs: {json.dumps({k: list(v.keys()) if isinstance(v, dict) else type(v).__name__ for k, v in outputs.items()}, indent=2)}"

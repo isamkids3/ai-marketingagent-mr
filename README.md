@@ -62,7 +62,7 @@ The platform operates on a **5-tier decoupled architecture** spanning web, intel
 |  +-----------------------+                                v |
 |  +--------------------------------------------------------+ |
 |  |            LangChain Agent Core (The Brain)            | |
-|  |   - Binds MCP Tools          - Local Qwen 3.6-35B LLM  | |
+|  |   - Binds MCP Tools          - Qwen 3.6-35B LLM        | |
 |  |   - Parses Tone & Demography - Manages Session State   | |
 |  +--------------------------------------------------------+ |
 +------------------------------+------------------------------+
@@ -83,9 +83,12 @@ The platform operates on a **5-tier decoupled architecture** spanning web, intel
 +-------------------------------------------------------------+
 ```
 
+> [!NOTE]
+> Layer 5 (ComfyUI) and the Qwen/vLLM inference server are GPU-bound and are commonly hosted on a separate machine from the web stack — e.g. a dedicated GPU box or DGX node reachable over the LAN — rather than on the same machine running the backend/frontend. Point `COMFYUI_URL` and `OPENAI_API_BASE` at wherever they're actually running (`localhost` if co-located, or a LAN IP/hostname if remote); nothing else in the stack needs to change.
+
 ### Communication Protocols
 * **Layer 1 to Layer 2 & 3:** REST APIs (HTTP Fetch) for session control, user authentication, and system health status. Server-Sent Events (SSE) stream active chat messages and token generations.
-* **Layer 2 & 3 to Layer 4:** Model Context Protocol (MCP) JSON payloads served via stdio or SSE transport.
+* **Layer 2 & 3 to Layer 4:** Model Context Protocol (MCP) JSON payloads over a persistent Streamable HTTP connection (falls back to stdio if the HTTP server isn't reachable), pooled and reused across requests rather than reconnected per message.
 * **Layer 4 to Layer 5:** Local WebSockets and REST endpoints (`/view`, `/upload`, `/prompt`) hosted by ComfyUI to control execution graph pipelines.
 
 ---
@@ -116,6 +119,11 @@ MilleniumRadius/
 │   │   └── components/       # Chat window, sidebar, input area components
 │   ├── package.json          # Node package definition
 │   └── tsconfig.json         # TypeScript configuration
+│
+├── postiz-docker-compose/    # Self-hosted Postiz + Temporal stack (social publishing)
+│   ├── docker-compose.yaml   # Postiz, Postgres, Redis, Temporal, Elasticsearch services
+│   ├── dynamicconfig/        # Temporal dynamic config
+│   └── .env                  # Postiz/social platform OAuth credentials & storage config
 │
 └── gen-content/              # Shared Workspace Volume (Shared Sandbox)
                               # Resolves input paths, briefs, and houses ComfyUI renders
@@ -167,6 +175,9 @@ docker stop millenium-postgres
 ---
 
 ### Step 2: ComfyUI Hardware Renderer Environment
+
+> [!NOTE]
+> Skip this step if ComfyUI is already running on a separate GPU host (e.g. a DGX or other dedicated render server) — just set `COMFYUI_URL` in Step 5 to that host's address and continue to Step 4.
 
 Initialize a virtual environment for the rendering engine and fetch the target weights.
 
@@ -227,6 +238,9 @@ models/
 ---
 
 ### Step 3: LLM Inference Container Controls (Qwen Agent Backend)
+
+> [!NOTE]
+> Skip this step if the Qwen/vLLM inference server already runs on a separate GPU host — just set `OPENAI_API_BASE` in Step 5 to that host's address (e.g. `http://<gpu-host-ip>:8000/v1`) and continue to Step 4.
 
 Manage host VRAM allocations by spinning the containerized local Qwen model backend up or down.
 
@@ -302,12 +316,14 @@ Configure connection endpoints and seed database tables.
    # PostgreSQL Connection
    DATABASE_URL=postgresql+asyncpg://postgres:my_secure_dev_password@localhost:5432/millenium_radius
    
-   # Local Qwen Backend Configuration
+   # Qwen Backend Configuration
+   # Point at localhost if co-located, or a LAN IP/hostname if Qwen/vLLM runs on a separate GPU host (e.g. a DGX)
    OPENAI_API_KEY=adam-dali-test-qwen-key
    OPENAI_MODEL=Qwen/Qwen3.6-35B-A3B-FP8
    OPENAI_API_BASE=http://localhost:8000/v1
    
    # Sandbox and ComfyUI Paths
+   # COMFYUI_URL: same rule as above — localhost or a remote GPU host's address
    SHARED_WORKSPACE_ROOT="/Users/adamdali/Documents/MilleniumRadius/gen-content"
    COMFYUI_URL="http://localhost:8188"
    MCP_SERVER_URL="http://127.0.0.1:9000/mcp"
@@ -380,10 +396,10 @@ python3 test_workflow_execution.py --workflow image_text-video --prompt "Animate
 
 ## 8. Postiz Social Media Integration & Troubleshooting
 
-The platform integrates directly with **Postiz** using the Model Context Protocol (MCP) to schedule, draft, and publish generated campaign assets across 28+ channels (X/Twitter, LinkedIn, Instagram, Threads, Discord, etc.).
+The platform integrates directly with **Postiz** using the Model Context Protocol (MCP) to schedule, draft, and publish generated campaign assets across 28+ channels (X/Twitter, LinkedIn, Instagram, Threads, TikTok, Discord, etc.).
 
 ### Architecture & Connection
-* **Multi-Session Client Connection**: The FastAPI backend orchestrator (`app/agent/orchestrator.py`) concurrently connects to the ComfyUI MCP server (stdio) and the Postiz MCP server (streamable HTTP SSE transport).
+* **Multi-Session Client Connection**: The FastAPI backend orchestrator (`app/agent/orchestrator.py`) maintains persistent, pooled MCP sessions to both the ComfyUI MCP server and the Postiz MCP server (streamable HTTP transport), reused across requests and automatically reconnected if a session drops.
 * **Environment Variables**: Managed via `/postiz-docker-compose/.env`.
 * **Agent Integration**: The agent dynamically parses the available social posting tools (e.g. `integrationList`, `schedulePostTool`, `generateImageTool`) and uses native system prompts to coordinate scheduling.
 ### Key Hurdles & Solutions

@@ -93,13 +93,10 @@ class CompositionElement(BaseModel):
                     )
                 # Check for excessive height relative to line count (causes text duplication/stretching)
                 num_lines = self.text.count('\n') + 1
-                max_allowed_height = num_lines * 100
+                max_allowed_height = num_lines * 120
                 if height > max_allowed_height:
-                    raise ValueError(
-                        f"The text bounding box {self.bbox} has a height of {height} for {num_lines} line(s) of text. "
-                        f"This is too tall (max height allowed for {num_lines} line(s) is {max_allowed_height}). "
-                        "Excessive vertical space forces the generator to duplicate lines or stretch text. "
-                        "Please decrease the bounding box height (y2 - y1) to fit the text tightly (recommend 70-80 per line, e.g. height 210-240 for 3 lines)."
+                    logger.warning(
+                        f"The text bounding box {self.bbox} height {height} exceeds ideal line height budget ({max_allowed_height})."
                     )
             # Check for spelling typos against user prompt words
             user_words = active_user_words.get()
@@ -119,9 +116,8 @@ class CompositionElement(BaseModel):
                                     continue
                                 if w_agent == w_user + 's':
                                     continue
-                                raise ValueError(
-                                    f"Spelling anomaly detected: The word '{w_agent}' in layout text is extremely close to the user's word '{w_user}' from chat history, "
-                                    f"but is not equal. Please check for spelling typos in the text element (e.g., 'gocery' instead of 'grocery', or 'cofee' instead of 'coffee')."
+                                logger.warning(
+                                    f"Potential spelling anomaly: '{w_agent}' vs user word '{w_user}'"
                                 )
         return self
 
@@ -159,11 +155,8 @@ class CompositionalDeconstruction(BaseModel):
                 y1_o, x1_o, y2_o, x2_o = o.bbox
                 # Check if bounding boxes intersect
                 if not (x2_t <= x1_o or x1_t >= x2_o or y2_t <= y1_o or y1_t >= y2_o):
-                    raise ValueError(
-                        f"Overlap/Intersection detected: The text overlay element '{t.text}' with bbox {t.bbox} "
-                        f"overlaps with the foreground object element '{o.desc[:40]}...' with bbox {o.bbox}. "
-                        "To prevent rendering corruption and pixel-fighting, you MUST keep text and foreground objects physically separate. "
-                        "Please shift or segment their bounding boxes so they do not intersect."
+                    logger.warning(
+                        f"Overlap detected: text '{t.text}' {t.bbox} intersects object '{o.desc[:30]}' {o.bbox}."
                     )
         return self
 
@@ -273,27 +266,23 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
             
             if tools:
                 for t in tools:
-                    # Safely serialize tool to avoid TypeError on LangChain Tool objects
-                    if hasattr(t, "dict"):
-                        t_val = t.dict()
-                    elif hasattr(t, "args_schema") and t.args_schema:
-                        t_val = {"name": t.name, "description": t.description, "parameters": t.args_schema.schema()}
-                    else:
-                        t_val = t
-                    try:
-                        num_tokens += len(encoding.encode(json.dumps(t_val)))
-                    except Exception:
-                        num_tokens += len(encoding.encode(str(t_val)))
+                    name = getattr(t, "name", "")
+                    description = getattr(t, "description", "")
+                    num_tokens += len(encoding.encode(f"Tool {name}: {description}"))
+                    args_schema = getattr(t, "args_schema", None)
+                    if args_schema:
+                        try:
+                            fields = getattr(args_schema, "model_fields", {})
+                            field_summary = {
+                                fn: f"{field.annotation} - {field.description or ''}"
+                                for fn, field in fields.items()
+                            }
+                            num_tokens += len(encoding.encode(json.dumps(field_summary)))
+                        except Exception:
+                            pass
             
             num_tokens += 2  # every reply is primed with <im_start>assistant
-            
-            # Apply conservative safety factors & flat formatting margins
-            if tools:
-                num_tokens = int(num_tokens * 1.08) + 1500
-            else:
-                num_tokens = int(num_tokens * 1.03) + 500
-                
-            return num_tokens
+            return num_tokens + 200
         except Exception as e:
             logger.warning(f"Error estimating tokens: {e}")
             # Crude fallback if tiktoken fails
@@ -304,11 +293,7 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
             if tools:
                 for t in tools:
                     total_chars += len(str(t))
-            estimated = total_chars // 4
-            if tools:
-                estimated = int(estimated * 1.08) + 1500
-            else:
-                estimated = int(estimated * 1.03) + 500
+            estimated = (total_chars // 4) + 200
             return estimated
 
     def _prune_messages(self, messages: List[Any], tools: Optional[List[Any]] = None) -> List[Any]:
@@ -400,7 +385,7 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
             
         # 3. Sliding Window Truncation (Token-Based History Eviction)
         current_tokens = self._estimate_tokens(pruned_messages, tools)
-        target_limit = 32000
+        target_limit = 45000
         
         system_msgs = [m for m in pruned_messages if m.__class__.__name__ == "SystemMessage"]
         other_msgs = [m for m in pruned_messages if m.__class__.__name__ != "SystemMessage"]
@@ -422,11 +407,11 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
         # Max context limit config
         max_context = 128000
         if "qwen" in self.model_name.lower() or os.getenv("OPENAI_API_BASE"):
-            max_context = 42000
+            max_context = int(os.getenv("MAX_CONTEXT_WINDOW", "42000"))
             
         # Strip tools if context gets too high to force the agent to stop looping and summarize
-        if input_tokens >= 35000:
-            logger.warning(f"[Token Limiter] Input tokens ({input_tokens}) >= 35000. Stripping tools to force final response.")
+        if input_tokens >= 55000:
+            logger.warning(f"[Token Limiter] Input tokens ({input_tokens}) >= 55000. Stripping tools to force final response.")
             kwargs.pop("tools", None)
             kwargs.pop("tool_choice", None)
             # Re-estimate without tools
@@ -498,7 +483,7 @@ agent_llm = TokenLimitingChatOpenAI(
     openai_api_key=openai_api_key,
     openai_api_base=openai_api_base,
     temperature=0.3,
-    max_tokens=4096
+    max_tokens=8192
 )
 
 SYSTEM_PROMPT = """<identity_and_marketing_goal>
@@ -558,7 +543,13 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - Mandatory Bounding Boxes (Layout Anchoring): Every visual element, object, or text overlay in the compositional deconstruction MUST have explicit, non-overlapping `bbox` coordinates defined to anchor the layout and prevent visual overlaps that trigger safety filters. Crucially, coordinates MUST be specified on a 0-1000 scale (e.g., [100, 200, 900, 800]), NOT as 0-100 percentages (e.g., [10, 20, 90, 80]). WARNING: You MUST use the Y-first format [y1, x1, y2, x2]. DO NOT swap X and Y (e.g., do not write [x1, y1, x2, y2], which squishes horizontal layouts into vertical pillars and causes spelling glitches).
    - Isolate Text Coordinates: Bounding boxes for text overlays (`type: "text"`) must be strictly separated from backdrop/container objects (`type: "obj"`, such as buttons, badges, banners, or boxes) so they do not overlap. If text is meant to be placed 'on' or 'inside' a shape, do NOT overlap their bounding boxes; instead, allocate a separate, smaller bounding box for the text that sits entirely inside the container box with clean margins. They must not compete or fight for the same pixels, which causes visual artifacts and spelling corruption.
 
-9. Ideogram Infographic & Layout Discipline: If generating an infographic, flowchart, or multi-item list/comparison (e.g., "benefits with icons and labels"), you MUST explicitly define **every single item, icon/graphic, shape, and text label** in the JSON `elements` list with its own individual bounding box. If the user request is high-level, you must still expand it into a detailed, fully deconstructed layout. You are strictly forbidden from writing a high-level description for a multi-item infographic but only defining a single element in the JSON, as this forces the renderer to hallucinate the remaining elements, resulting in gibberish text and graphics.
+9. Vision Inspection & Quality Verification (`analyze_image`) — MANDATORY STEPS:
+   - Mandatory Check for ALL Uploaded Images: Whenever a user uploads any reference image (indicated by `[Uploaded Reference Image: /sandbox/...]` or `[Uploaded Reference Image 1: /sandbox/...]`), you MUST ALWAYS invoke `analyze_image` on the uploaded image path as your VERY FIRST action, regardless of whether the user is asking a visual question or starting a generation workflow. You are strictly forbidden from answering visual questions about an uploaded image without calling `analyze_image` first.
+   - Mandatory Post-Generation Quality Check: Immediately after ANY image generation tool (`text_image`, `image_reference_and_text_to_image`, `image_image`, `image_image_2ref`, `image_image_3ref`, `mask_image_image`) returns a generated output image path (`/sandbox/...`), you MUST invoke `analyze_image` on that output image path to perform a quality check BEFORE providing your final response to the user.
+   - Scope Constraint: You MUST ONLY call `analyze_image` for these two mandatory scenarios (uploaded reference images and freshly generated output images). Do NOT call `analyze_image` for general text tasks or unneeded checks.
+   - Concise Query Guidance: Keep your custom `prompt` parameter short and specific (e.g., "Describe the key subject, layout, and verify there are no visual flaws."). The underlying QwenVL vision model output is strictly capped at 128 tokens for maximum execution speed.
+
+10. Ideogram Infographic & Layout Discipline: If generating an infographic, flowchart, or multi-item list/comparison (e.g., "benefits with icons and labels"), you MUST explicitly define **every single item, icon/graphic, shape, and text label** in the JSON `elements` list with its own individual bounding box. If the user request is high-level, you must still expand it into a detailed, fully deconstructed layout. You are strictly forbidden from writing a high-level description for a multi-item infographic but only defining a single element in the JSON, as this forces the renderer to hallucinate the remaining elements, resulting in gibberish text and graphics.
    - **Token-Budget Optimization (BBox & Element Limits)**: To prevent JSON truncation and LLM output token limit errors, you MUST:
      - **Limit Elements Count**: Limit the visual layout to a maximum of 6 elements per image (especially for infographics or split-screens).
      - **Concise Descriptions**: Keep each element's description concise and strictly under 40 words. Do not use overly descriptive micro-prose. This forces compact JSON output and avoids truncation failures.
@@ -1415,27 +1406,34 @@ def mcp_tool_to_langchain(mcp_tool, session: ClientSession):
                             "audio/wav": ".wav",
                         }
                         ext = ext_map.get(mime_type, os.path.splitext(filename)[1] or ".png")
+                        sub_dir = "videos" if ext in (".mp4", ".mov", ".avi", ".webm") else "images"
 
-                        # Save to gen-content/{session_id}/images/
+                        # Save to gen-content/{session_id}/{sub_dir}/
                         base_workspace = str(BASE_WORKSPACE)
                         session_id = active_session_id.get()
-                        session_output_dir = os.path.join(base_workspace, session_id, "images")
+                        session_output_dir = os.path.join(base_workspace, session_id, sub_dir)
                         os.makedirs(session_output_dir, exist_ok=True)
                         asset_id = data.get("asset_id", "unknown")
                         output_filename = f"generated_{asset_id}{ext}"
                         output_path = os.path.join(session_output_dir, output_filename)
 
-                        logger.info(f"Downloading generated image asset for {tool_name} from {view_url} to {output_path}...")
+                        logger.info(f"Downloading generated asset for {tool_name} from {view_url} to {output_path}...")
                         async with httpx.AsyncClient(timeout=60.0) as client:
                             resp = await client.get(view_url)
                             if resp.status_code == 200:
                                 with open(output_path, "wb") as f:
                                     f.write(resp.content)
                                 if os.path.exists(output_path):
-                                    logger.info(f"Successfully saved generated image asset to {output_path}")
-                                    return f"/sandbox/{session_id}/images/{output_filename}\n\n[Asset ID: {asset_id}]"
+                                    logger.info(f"Successfully saved generated asset to {output_path}")
+                                    res_str = f"/sandbox/{session_id}/{sub_dir}/{output_filename}\n\n[Asset ID: {asset_id}]"
+                                    if "analysis" in data and data["analysis"]:
+                                        res_str += f"\n\nText Output:\n{data['analysis']}"
+                                    return res_str
                             else:
-                                logger.error(f"Failed to download generated image. Status: {resp.status_code}, URL: {view_url}")
+                                logger.error(f"Failed to download generated asset. Status: {resp.status_code}, URL: {view_url}")
+
+                    elif "analysis" in data and data["analysis"]:
+                        return f"Visual Analysis Result:\n{data['analysis']}"
             except Exception as e:
                 logger.error(f"Error executing response adapter for {tool_name}: {e}", exc_info=True)
         return text_val

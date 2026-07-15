@@ -6,19 +6,8 @@ from app.agent.orchestrator import connect_to_all_mcp_servers, get_marketing_age
 
 @pytest.mark.asyncio
 async def test_connect_to_all_mcp_servers_no_postiz():
-    # Mock connect_to_mcp_server
     comfyui_mock_session = AsyncMock()
-    comfyui_mock_session.initialize = AsyncMock()
-    
-    # Mock context manager of comfyui
-    comfyui_cm = MagicMock()
-    comfyui_cm.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
-    comfyui_cm.__aexit__ = AsyncMock()
-    
-    with patch("app.agent.orchestrator.connect_to_mcp_server", return_value=comfyui_cm), \
-         patch("app.agent.orchestrator.ClientSession", return_value=comfyui_mock_session), \
-         patch.dict(os.environ, {"POSTIZ_API_KEY": ""}):
-         
+    with patch("app.agent.orchestrator.get_global_mcp_sessions", return_value={"comfyui": comfyui_mock_session}):
         async with connect_to_all_mcp_servers() as sessions:
             assert "comfyui" in sessions
             assert "postiz" not in sessions
@@ -27,29 +16,8 @@ async def test_connect_to_all_mcp_servers_no_postiz():
 @pytest.mark.asyncio
 async def test_connect_to_all_mcp_servers_with_postiz():
     comfyui_mock_session = AsyncMock()
-    comfyui_mock_session.initialize = AsyncMock()
-    
     postiz_mock_session = AsyncMock()
-    postiz_mock_session.initialize = AsyncMock()
-    
-    # Mock context manager of comfyui
-    comfyui_cm = MagicMock()
-    comfyui_cm.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
-    comfyui_cm.__aexit__ = AsyncMock()
-
-    # Mock context manager of postiz (streamablehttp_client)
-    postiz_cm = MagicMock()
-    postiz_cm.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock(), None))
-    postiz_cm.__aexit__ = AsyncMock()
-
-    with patch("app.agent.orchestrator.connect_to_mcp_server", return_value=comfyui_cm), \
-         patch("app.agent.orchestrator.streamablehttp_client", return_value=postiz_cm), \
-         patch("app.agent.orchestrator.ClientSession") as mock_client_session, \
-         patch.dict(os.environ, {"POSTIZ_API_KEY": "test_key", "POSTIZ_MCP_URL": "http://mock-postiz/mcp"}):
-         
-        # Make ClientSession return comfyui mock first, then postiz mock
-        mock_client_session.side_effect = [comfyui_mock_session, postiz_mock_session]
-         
+    with patch("app.agent.orchestrator.get_global_mcp_sessions", return_value={"comfyui": comfyui_mock_session, "postiz": postiz_mock_session}):
         async with connect_to_all_mcp_servers() as sessions:
             assert "comfyui" in sessions
             assert "postiz" in sessions
@@ -82,7 +50,7 @@ async def test_get_marketing_agent_multi_session():
     }
     
     # We clear the cached agent to force rediscovery
-    with patch("app.agent.orchestrator._cached_agent", None), \
+    with patch("app.agent.orchestrator._cached_raw_agent", None), \
          patch("app.agent.orchestrator.create_deep_agent") as mock_create_agent:
          
         mock_agent = MagicMock()

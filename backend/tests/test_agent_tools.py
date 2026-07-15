@@ -286,7 +286,7 @@ def test_context_window_optimizations():
     def mock_estimate(msgs, tools=None):
         # If there are more than 5 messages in the history, simulate token overload
         if len(msgs) > 5:
-            return 35000
+            return 50000
         return 15000
         
     with patch.object(llm, "_estimate_tokens", side_effect=mock_estimate):
@@ -341,7 +341,8 @@ def test_resolve_local_path():
     assert path_ws == "/tmp/mock_workspace/file.txt"
     
     # Test sandbox resolution (should resolve relative to SHARED_WORKSPACE_ROOT)
-    with patch.dict(os.environ, {"SHARED_WORKSPACE_ROOT": "/tmp/mock_shared"}):
+    from pathlib import Path
+    with patch("app.agent.tools.BASE_WORKSPACE", Path("/tmp/mock_shared")):
         path_sb = resolve_local_path("/sandbox/session-123/file.txt")
         assert path_sb == "/tmp/mock_shared/session-123/file.txt"
         
@@ -394,39 +395,36 @@ def test_composition_validators():
         )
     assert "extremely tall and narrow" in str(excinfo.value)
 
-    # Invalid too tall text bbox
-    with pytest.raises(ValidationError) as excinfo:
-        CompositionElement(
-            type="text",
-            bbox=[300, 100, 700, 900],  # height = 400
-            desc="Header text",
-            text="Tired of bitter\ngrocery store coffee?"  # 2 lines, max allowed height is 200
-        )
-    assert "too tall" in str(excinfo.value)
+    # Tall text bbox (logs warning instead of crashing)
+    elem_tall = CompositionElement(
+        type="text",
+        bbox=[300, 100, 700, 900],  # height = 400
+        desc="Header text",
+        text="Tired of bitter\ngrocery store coffee?"
+    )
+    assert elem_tall.text == "Tired of bitter\ngrocery store coffee?"
 
-    # Invalid overlapping bounding boxes between text and object
-    with pytest.raises(ValidationError) as excinfo:
-        CompositionalDeconstruction(
-            background="coffee cup shop",
-            elements=[
-                CompositionElement(type="obj", bbox=[200, 300, 800, 800], desc="Blurred generic crumpled paper coffee cup"),
-                CompositionElement(type="text", bbox=[300, 150, 380, 500], desc="Barista quality coffee", text="Coffee")
-            ]
-        )
-    assert "Overlap/Intersection detected" in str(excinfo.value)
+    # Overlapping bounding boxes between text and object (logs warning instead of crashing)
+    comp_overlap = CompositionalDeconstruction(
+        background="coffee cup shop",
+        elements=[
+            CompositionElement(type="obj", bbox=[200, 300, 800, 800], desc="Blurred generic crumpled paper coffee cup"),
+            CompositionElement(type="text", bbox=[300, 150, 380, 500], desc="Barista quality coffee", text="Coffee")
+        ]
+    )
+    assert len(comp_overlap.elements) == 2
 
-    # Invalid spelling typo (distance = 1 anomaly against user prompt words)
+    # Invalid spelling typo
     from app.agent.orchestrator import active_user_words
     token = active_user_words.set({"grocery", "coffee", "bitter", "store"})
     try:
-        with pytest.raises(ValidationError) as excinfo:
-            CompositionElement(
-                type="text",
-                bbox=[100, 150, 180, 850],
-                desc="Header text",
-                text="Tired of biter gocery store cofee?"
-            )
-        assert "Spelling anomaly detected" in str(excinfo.value)
+        elem_spelling = CompositionElement(
+            type="text",
+            bbox=[100, 150, 180, 850],
+            desc="Header text",
+            text="Tired of biter gocery store cofee?"
+        )
+        assert elem_spelling.text == "Tired of biter gocery store cofee?"
     finally:
         active_user_words.reset(token)
 

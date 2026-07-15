@@ -116,4 +116,23 @@ def register_and_build_response(
         response_data["image_base64"] = result["image_base64"]
         response_data["image_mime_type"] = result.get("image_mime_type", "image/png")
     
+    # Extract text analysis payloads (e.g. from PreviewAny / QwenVL vision nodes)
+    raw_outputs = result.get("raw_outputs")
+    if isinstance(raw_outputs, dict):
+        text_outputs = []
+        for node_id, node_out in raw_outputs.items():
+            if isinstance(node_out, dict):
+                for key in ("text", "string", "text_output"):
+                    val = node_out.get(key)
+                    if isinstance(val, list):
+                        for item in val:
+                            if isinstance(item, str) and item.strip():
+                                text_outputs.append(item.strip())
+                    elif isinstance(val, str) and val.strip():
+                        text_outputs.append(val.strip())
+        if text_outputs:
+            analysis_text = "\n".join(text_outputs)
+            response_data["analysis"] = analysis_text
+            response_data["description"] = analysis_text
+
     return response_data
