@@ -342,13 +342,14 @@ def test_resolve_local_path():
     
     # Test sandbox resolution (should resolve relative to SHARED_WORKSPACE_ROOT)
     from pathlib import Path
-    with patch("app.agent.tools.BASE_WORKSPACE", Path("/tmp/mock_shared")):
+    with patch("app.agent.tools.BASE_WORKSPACE", Path("/tmp/mock_shared")), patch.dict(os.environ, {"SHARED_WORKSPACE_ROOT": "/tmp/mock_shared"}):
         path_sb = resolve_local_path("/sandbox/session-123/file.txt")
         assert path_sb == "/tmp/mock_shared/session-123/file.txt"
         
     # Test plain/absolute path pass-through
     path_plain = resolve_local_path("/etc/hosts")
     assert path_plain == "/etc/hosts"
+    WorkspaceManager.set_workspace_dir(None)
 
 
 def test_composition_validators():

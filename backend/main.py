@@ -1,8 +1,3 @@
-from pathlib import Path
-from dotenv import load_dotenv
-_dotenv_path = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path=_dotenv_path, override=True)
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -35,9 +30,14 @@ async def lifespan(app: FastAPI):
             ngrok_bin = "ngrok"
             if os.path.exists("/opt/homebrew/bin/ngrok"):
                 ngrok_bin = "/opt/homebrew/bin/ngrok"
-            
+
+            ngrok_cmd = [ngrok_bin, "http", "8000", "--log=stdout"]
+            ngrok_token = os.getenv("NGROK_AUTHTOKEN")
+            if ngrok_token:
+                ngrok_cmd.extend(["--authtoken", ngrok_token])
+
             ngrok_process = subprocess.Popen(
-                [ngrok_bin, "http", "8000", "--log=stdout"],
+                ngrok_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
@@ -77,7 +77,17 @@ os.makedirs(shares_dir, exist_ok=True)
 app.mount("/shares", StaticFiles(directory=shares_dir), name="shares")
 
 # Sandbox Environment Setup (Additive)
-from app.agent.tools import BASE_WORKSPACE
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_WORKSPACE = Path(os.getenv("SHARED_WORKSPACE_ROOT", str(Path(__file__).parent.parent / "gen-content"))).resolve()
+try:
+    os.makedirs(BASE_WORKSPACE, exist_ok=True)
+except Exception as e:
+    import logging
+    logging.warning(f"Could not create BASE_WORKSPACE: {e}")
 
 # Mount the sandbox static folder
 app.mount("/sandbox", StaticFiles(directory=str(BASE_WORKSPACE)), name="sandbox")

@@ -182,17 +182,12 @@ async def test_agent_chat_history_loading(client: AsyncClient):
         
     mock_agent.astream_events = mock_astream_events
     
+    mock_mcp_ctx = AsyncMock()
+    mock_mcp_ctx.__aenter__.return_value = {"comfyui": AsyncMock()}
+    mock_mcp_ctx.__aexit__.return_value = None
+
     with patch("app.api.v1.endpoints.agent.get_marketing_agent", return_value=mock_agent) as mock_get_agent, \
-         patch("app.api.v1.endpoints.agent.connect_to_mcp_server") as mock_connect, \
-         patch("app.api.v1.endpoints.agent.ClientSession") as mock_client_session:
-         
-         # Mock ClientSession context manager
-         mock_session_instance = AsyncMock()
-         mock_session_instance.initialize = AsyncMock()
-         mock_client_session.return_value.__aenter__.return_value = mock_session_instance
-         
-         # Mock connect_to_mcp_server to return mock connection streams
-         mock_connect.return_value.__aenter__.return_value = (AsyncMock(), AsyncMock())
+         patch("app.api.v1.endpoints.agent.connect_to_all_mcp_servers", return_value=mock_mcp_ctx):
          
          chat_response = await client.post(
              "/api/v1/agent/chat",
@@ -264,17 +259,12 @@ async def test_multi_image_upload(client: AsyncClient):
         yield {"event": "on_chain_end", "data": {"output": {"messages": []}}}
     mock_agent.astream_events = mock_astream_events
     
+    mock_mcp_ctx = AsyncMock()
+    mock_mcp_ctx.__aenter__.return_value = {"comfyui": AsyncMock()}
+    mock_mcp_ctx.__aexit__.return_value = None
+
     with patch("app.api.v1.endpoints.agent.get_marketing_agent", return_value=mock_agent) as mock_get_agent, \
-         patch("app.api.v1.endpoints.agent.connect_to_mcp_server") as mock_connect, \
-         patch("app.api.v1.endpoints.agent.ClientSession") as mock_client_session:
-         
-         # Mock ClientSession context manager
-         mock_session_instance = AsyncMock()
-         mock_session_instance.initialize = AsyncMock()
-         mock_client_session.return_value.__aenter__.return_value = mock_session_instance
-         
-         # Mock connect_to_mcp_server to return mock connection streams
-         mock_connect.return_value.__aenter__.return_value = (AsyncMock(), AsyncMock())
+         patch("app.api.v1.endpoints.agent.connect_to_all_mcp_servers", return_value=mock_mcp_ctx):
          
          # Prepare dummy files
          files = {
@@ -342,17 +332,12 @@ async def test_three_image_upload(client: AsyncClient):
         yield {"event": "on_chain_end", "data": {"output": {"messages": []}}}
     mock_agent.astream_events = mock_astream_events
     
+    mock_mcp_ctx = AsyncMock()
+    mock_mcp_ctx.__aenter__.return_value = {"comfyui": AsyncMock()}
+    mock_mcp_ctx.__aexit__.return_value = None
+
     with patch("app.api.v1.endpoints.agent.get_marketing_agent", return_value=mock_agent) as mock_get_agent, \
-         patch("app.api.v1.endpoints.agent.connect_to_mcp_server") as mock_connect, \
-         patch("app.api.v1.endpoints.agent.ClientSession") as mock_client_session:
-         
-         # Mock ClientSession context manager
-         mock_session_instance = AsyncMock()
-         mock_session_instance.initialize = AsyncMock()
-         mock_client_session.return_value.__aenter__.return_value = mock_session_instance
-         
-         # Mock connect_to_mcp_server to return mock connection streams
-         mock_connect.return_value.__aenter__.return_value = (AsyncMock(), AsyncMock())
+         patch("app.api.v1.endpoints.agent.connect_to_all_mcp_servers", return_value=mock_mcp_ctx):
          
          # Prepare dummy files
          files = {

@@ -28,10 +28,6 @@ import hashlib
 router = APIRouter()
 logger = logging.getLogger("agent_api")
 
-# Strong references to running background tasks to prevent garbage collection
-running_agent_tasks = set()
-
-
 
 def get_file_hash(path: str) -> str:
     """Calculate SHA256 hash of a file."""
@@ -122,7 +118,7 @@ async def chat_with_agent(
     doc_filename = None
     is_masked = False
     
-    shared_root = str(BASE_WORKSPACE)
+    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", str(BASE_WORKSPACE))
     os.makedirs(shared_root, exist_ok=True)
     
     if "multipart/form-data" in content_type:
@@ -200,7 +196,7 @@ async def chat_with_agent(
                 logger.info(f"Copied uploaded image2 to temp workspace: {temp_image2_path}")
             except Exception as e:
                 logger.warning(f"Could not copy image2 to temp workspace: {e}")
-                
+
         if image3_file and hasattr(image3_file, "filename") and image3_file.filename:
             image3_filename = image3_file.filename
             image3_path = os.path.join(thread_dir, image3_filename)
@@ -277,24 +273,9 @@ async def chat_with_agent(
         meta["image_path"] = f"/sandbox/{session_id_str}/{image_filename}"
     if image2_filename:
         meta["image2_path"] = f"/sandbox/{session_id_str}/{image2_filename}"
-    if image3_filename:
-        meta["image3_path"] = f"/sandbox/{session_id_str}/{image3_filename}"
     if doc_filename:
         meta["doc_path"] = f"/sandbox/{session_id_str}/{doc_filename}"
         meta["doc_name"] = doc_filename
-
-    # Ensure chat session exists in database to prevent Foreign Key constraint violation
-    from app.crud.chat import get_session, create_session
-    from app.schemas.chat import ChatSessionCreate
-    db_session_obj = await get_session(db, session_id=session_id)
-    if not db_session_obj:
-        logger.info(f"Chat session {session_id} not found in DB. Auto-creating for user {current_user.id}...")
-        await create_session(
-            db,
-            user_id=current_user.id,
-            session_in=ChatSessionCreate(title=prompt[:40] if prompt else "New Conversation"),
-            custom_id=session_id
-        )
 
     user_msg_in = ChatMessageCreate(
         role="user",
@@ -309,8 +290,6 @@ async def chat_with_agent(
     
     # Map database messages to LangChain messages for graph state initialization
     formatted_messages = []
-    last_tool_call_ids = []
-
     for idx, db_msg in enumerate(db_messages):
         role = db_msg.role
         content = db_msg.content
@@ -332,26 +311,19 @@ async def chat_with_agent(
             
         if role == "user":
             formatted_messages.append(HumanMessage(content=msg_content))
-            last_tool_call_ids = []
         elif role == "assistant":
+            # Extract tool calls if any
             tool_calls = []
-            last_tool_call_ids = []
             if isinstance(content, dict) and "tool_calls" in content:
                 import copy
                 tool_calls = copy.deepcopy(content["tool_calls"])
                 for tc in tool_calls:
-                    if isinstance(tc, dict):
-                        tc_id = tc.get("id") or f"call_{uuid.uuid4().hex[:8]}"
-                        tc["id"] = tc_id
-                        last_tool_call_ids.append(tc_id)
+                    if isinstance(tc, dict) and "id" not in tc:
+                        tc["id"] = f"call_{uuid.uuid4().hex[:8]}"
             formatted_messages.append(AIMessage(content=msg_content, tool_calls=tool_calls))
         elif role == "tool":
             tool_name = (db_msg.meta_data or {}).get("tool_name") or "unknown"
-            tool_call_id = (db_msg.meta_data or {}).get("tool_call_id")
-            if not tool_call_id and last_tool_call_ids:
-                tool_call_id = last_tool_call_ids.pop(0)
-            if not tool_call_id:
-                tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+            tool_call_id = (db_msg.meta_data or {}).get("tool_call_id") or "call_dummy"
             formatted_messages.append(ToolMessage(content=msg_content, name=tool_name, tool_call_id=tool_call_id))
 
     # 3. Build agent invocation config
@@ -363,155 +335,15 @@ async def chat_with_agent(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """Stream agent events as SSE to the client."""
-        queue = asyncio.Queue()
-
-        async def run_agent_task():
-            from app.core.database import SessionLocal
-            accumulated_ai_text = ""
-            all_new_messages = []
-            # Track how many messages have already been persisted so we can
-            # write only the newly-arrived tail on each on_chain_end event.
-            persisted_count = len(formatted_messages)
-
-            async def _persist_messages(new_batch):
-                """Persist a batch of new LangChain messages to the database."""
-                async with SessionLocal() as bg_db:
-                    # Ensure chat session exists in bg_db transaction to prevent Foreign Key constraint violation
-                    from app.crud.chat import get_session, create_session
-                    from app.schemas.chat import ChatSessionCreate
-                    s = await get_session(bg_db, session_id=session_id)
-                    if not s:
-                        logger.info(f"Auto-creating chat_session {session_id} in bg_db transaction...")
-                        await create_session(
-                            bg_db,
-                            user_id=current_user.id,
-                            session_in=ChatSessionCreate(title=prompt[:40] if prompt else "New Conversation"),
-                            custom_id=session_id
-                        )
-
-                    for msg in new_batch:
-                        role = "assistant"
-                        if msg.__class__.__name__ == "ToolMessage":
-                            role = "tool"
-                        elif msg.__class__.__name__ == "HumanMessage":
-                            role = "user"
-
-                        content_dict = {}
-                        if isinstance(msg.content, str):
-                            content_dict = {"text": msg.content}
-                        elif isinstance(msg.content, list):
-                            content_dict = {"parts": msg.content}
-
-                        if hasattr(msg, "tool_calls") and msg.tool_calls:
-                            content_dict["tool_calls"] = msg.tool_calls
-
-                        meta = {"tone": tone} if tone else {}
-                        if role == "tool":
-                            tool_name_attr = getattr(msg, "name", None)
-                            if tool_name_attr:
-                                meta["tool_name"] = tool_name_attr
-                            tool_call_id_attr = getattr(msg, "tool_call_id", None)
-                            if tool_call_id_attr:
-                                meta["tool_call_id"] = tool_call_id_attr
-
-                        msg_in = ChatMessageCreate(
-                            role=role,
-                            content=content_dict,
-                            meta_data=meta if meta else None
-                        )
-                        await create_message(bg_db, session_id=session_id, message_in=msg_in)
-
-            try:
-                async with connect_to_all_mcp_servers() as sessions:
-                    agent = await get_marketing_agent(sessions, session_id=session_id_str, tone=tone)  # type: ignore
-
-                    # Stream events from the agent
-                    async for event in agent.astream_events(inputs, config=config, version="v2"):
-                        await queue.put(("event", event))
-                        
-                        kind = event.get("event", "")
-                        if kind == "on_chat_model_stream":
-                            chunk = event.get("data", {}).get("chunk")
-                            if chunk and hasattr(chunk, "content"):
-                                text_delta = ""
-                                if isinstance(chunk.content, str):
-                                    text_delta = chunk.content
-                                elif isinstance(chunk.content, list):
-                                    for part in chunk.content:
-                                        if isinstance(part, dict) and part.get("type") == "text":
-                                            text_delta += part.get("text", "")
-                                if text_delta:
-                                    accumulated_ai_text += text_delta
-
-                        elif kind == "on_chain_end":
-                            output = event.get("data", {}).get("output")
-                            if isinstance(output, dict) and "messages" in output:
-                                all_new_messages = output.get("messages", [])
-                                # ── Progressive persistence: write any new messages immediately ──
-                                if len(all_new_messages) > persisted_count:
-                                    new_batch = all_new_messages[persisted_count:]
-                                    try:
-                                        await _persist_messages(new_batch)
-                                        persisted_count = len(all_new_messages)
-                                        logger.info(f"Progressively persisted {len(new_batch)} message(s) to DB (total: {persisted_count})")
-                                    except Exception as persist_err:
-                                        logger.error(f"Progressive DB persist failed: {persist_err}", exc_info=True)
-
-                # Find and emit the final assistant text message
-                final_text = ""
-                for msg in reversed(all_new_messages):
-                    if msg.__class__.__name__ == "AIMessage":
-                        if isinstance(msg.content, str) and msg.content.strip():
-                            final_text = msg.content
-                            break
-                        elif isinstance(msg.content, list):
-                            for part in msg.content:
-                                if isinstance(part, dict) and part.get("type") == "text" and part.get("text", "").strip():
-                                    final_text = part["text"]
-                                    break
-                        if final_text:
-                            break
-
-                if final_text:
-                    await queue.put(("final_text", final_text))
-                elif accumulated_ai_text:
-                    await queue.put(("final_text", accumulated_ai_text))
-
-                await queue.put(("done", None))
-
-            except Exception as e:
-                logger.error(f"Agent background task failed: {e}", exc_info=True)
-                # Persist the error as an assistant message
-                try:
-                    async with SessionLocal() as bg_db:
-                        err_msg_in = ChatMessageCreate(
-                            role="assistant",
-                            content={"text": f"Error: {str(e)}"},
-                            meta_data=None
-                        )
-                        await create_message(bg_db, session_id=session_id, message_in=err_msg_in)
-                except Exception:
-                    pass
-                await queue.put(("error", str(e)))
-
-        # Spawn background task and keep a strong reference to prevent garbage collection
-        bg_task = asyncio.create_task(run_agent_task())
-        running_agent_tasks.add(bg_task)
-        bg_task.add_done_callback(running_agent_tasks.discard)
-
+        accumulated_ai_text = ""
+        all_new_messages = []
 
         try:
-            while True:
-                try:
-                    # Wait for next item in the queue with a timeout
-                    item_type, data = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    # Yield a structured ping event to keep the connection alive
-                    yield _sse("ping", {"keepalive": True})
-                    continue
-                
-                if item_type == "event":
-                    event = data
+            async with connect_to_all_mcp_servers() as sessions:
+                agent = await get_marketing_agent(sessions, session_id=session_id_str, tone=tone)  # type: ignore
+
+                # Stream events from the agent using LangGraph's astream_events v2
+                async for event in agent.astream_events(inputs, config=config, version="v2"):
                     kind = event.get("event", "")
                     
                     # ── Agent thinking / intermediate text token ──
@@ -526,6 +358,7 @@ async def chat_with_agent(
                                     if isinstance(part, dict) and part.get("type") == "text":
                                         text_delta += part.get("text", "")
                             if text_delta:
+                                accumulated_ai_text += text_delta
                                 yield _sse("agent_thought", {"delta": text_delta})
 
                     # ── Tool about to be called ──
@@ -552,22 +385,88 @@ async def chat_with_agent(
                             "output": output_str,
                         })
 
-                elif item_type == "final_text":
-                    yield _sse("agent_message", {"text": data, "session_id": session_id_str})
+                    # ── Final model output (complete message) ──
+                    elif kind == "on_chain_end" and not event.get("parent_ids"):
+                        output = event.get("data", {}).get("output")
+                        if isinstance(output, dict):
+                            all_new_messages = output.get("messages", [])
 
-                elif item_type == "error":
-                    yield _sse("error", {"message": data})
-                    yield _sse("done", {"session_id": session_id_str})
-                    break
+            # ── Persist all new messages to the DB ──
+            saved_msgs = []
+            initial_msg_count = len(formatted_messages)
+            for msg in all_new_messages[initial_msg_count:]:
+                role = "assistant"
+                if msg.__class__.__name__ == "ToolMessage":
+                    role = "tool"
+                elif msg.__class__.__name__ == "HumanMessage":
+                    role = "user"
 
-                elif item_type == "done":
-                    yield _sse("done", {"session_id": session_id_str})
-                    break
+                content_dict = {}
+                if isinstance(msg.content, str):
+                    content_dict = {"text": msg.content}
+                elif isinstance(msg.content, list):
+                    content_dict = {"parts": msg.content}
+
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    content_dict["tool_calls"] = msg.tool_calls
+
+                meta = {"tone": tone} if tone else {}
+                if role == "tool":
+                    tool_name_attr = getattr(msg, "name", None)
+                    if tool_name_attr:
+                        meta["tool_name"] = tool_name_attr
+                    tool_call_id_attr = getattr(msg, "tool_call_id", None)
+                    if tool_call_id_attr:
+                        meta["tool_call_id"] = tool_call_id_attr
+
+                msg_in = ChatMessageCreate(
+                    role=role,
+                    content=content_dict,
+                    meta_data=meta if meta else None
+                )
+                db_msg = await create_message(db, session_id=session_id, message_in=msg_in)
+                saved_msgs.append(db_msg)
+
+            # Find and emit the final assistant text message
+            final_text = ""
+            for msg in reversed(all_new_messages):
+                if msg.__class__.__name__ == "AIMessage":
+                    if isinstance(msg.content, str) and msg.content.strip():
+                        final_text = msg.content
+                        break
+                    elif isinstance(msg.content, list):
+                        for part in msg.content:
+                            if isinstance(part, dict) and part.get("type") == "text" and part.get("text", "").strip():
+                                final_text = part["text"]
+                                break
+                    if final_text:
+                        break
+
+            # Emit the complete agent_message event with the final response
+            if final_text:
+                yield _sse("agent_message", {"text": final_text, "session_id": session_id_str})
+            elif accumulated_ai_text:
+                yield _sse("agent_message", {"text": accumulated_ai_text, "session_id": session_id_str})
+
+            yield _sse("done", {"session_id": session_id_str})
 
         except asyncio.CancelledError:
-            # Client browser disconnected, but we let the background task continue running to completion!
-            logger.info("Client browser disconnected. Background agent task continues running in background.")
-            pass
+            logger.info("Client disconnected / stopped stream during agent generation.")
+            raise
+        except Exception as e:
+            logger.error(f"Agent stream failed: {e}", exc_info=True)
+            # Persist the error as an assistant message
+            try:
+                err_msg_in = ChatMessageCreate(
+                    role="assistant",
+                    content={"text": f"Error: {str(e)}"},
+                    meta_data=None
+                )
+                await create_message(db, session_id=session_id, message_in=err_msg_in)
+            except Exception:
+                pass
+            yield _sse("error", {"message": str(e)})
+            yield _sse("done", {"session_id": session_id_str})
 
     return StreamingResponse(
         event_generator(),
@@ -590,7 +489,7 @@ async def upload_mask(
     Upload a mask image to be applied to an existing original image.
     Merges original and mask into an RGBA PNG and uploads to ComfyUI.
     """
-    shared_root = str(BASE_WORKSPACE)
+    shared_root = os.getenv("SHARED_WORKSPACE_ROOT", str(BASE_WORKSPACE))
     temp_workspace = WorkspaceManager.get_workspace_dir()
     
     session_id_str = ""

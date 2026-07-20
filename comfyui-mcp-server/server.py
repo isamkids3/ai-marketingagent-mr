@@ -46,7 +46,7 @@ def load_dotenv():
                         key, val = line.split("=", 1)
                         key = key.strip()
                         val = val.strip().strip("'\"")
-                        if key:
+                        if key and key not in os.environ:
                             os.environ[key] = val
         except Exception as e:
             logger.warning(f"Failed to load .env file: {e}")
@@ -215,8 +215,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 mcp = FastMCP(
     "ComfyUI_MCP_Server",
     lifespan=app_lifespan,
+    host="0.0.0.0",
     port=9000,
-    stateless_http=True
+    stateless_http=False
 )
 
 # Register all MCP tools

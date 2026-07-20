@@ -25,7 +25,7 @@ def load_dotenv():
                         key, val = line.split("=", 1)
                         key = key.strip()
                         val = val.strip().strip("'\"")
-                        if key:
+                        if key and key not in os.environ:
                             os.environ[key] = val
         except Exception as e:
             print(f"Warning: Failed to load .env file: {e}")

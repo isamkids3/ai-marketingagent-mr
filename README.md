@@ -146,7 +146,66 @@ MilleniumRadius/
 
 ## 6. Startup & Deployment Guide
 
-Follow these sequential steps to boot the entire local stack.
+The application can be deployed using the unified **Docker Compose** stack (recommended) or started manually per component.
+
+> [!IMPORTANT]
+> **GPU Host Prerequisites (DGX Node)**:
+> ComfyUI and the Qwen/vLLM inference server run on a dedicated GPU host (e.g. an NVIDIA DGX node or local GPU server).
+> **Both ComfyUI and the vLLM inference server MUST be up and running on the DGX host BEFORE launching the Docker Compose stack.**
+> The `comfyui-mcp` server cannot run or initialize without an active ComfyUI connection, and the `fastapi-backend` requires the vLLM server to be reachable over the network. Ensure `COMFYUI_URL` and `OPENAI_API_BASE` in the root `.env` point to your DGX host IP.
+
+### Recommended: Unified Docker Compose Deployment
+
+Spin up the entire platform (Next.js frontend, FastAPI backend, PostgreSQL database, ComfyUI MCP server, Postiz, and Temporal stack) with a single command from the project root:
+
+1. **Configure Root Environment Variables**:
+   Ensure the root [.env](file:///Users/adamdali/Documents/AI_Agent_MR/.env) file is updated with your DGX host IP address and API keys:
+   ```env
+   COMFYUI_URL=http://192.168.5.180:8188
+   OPENAI_API_BASE=http://192.168.5.180:8000/v1
+   ```
+
+2. **Launch Stack**:
+   ```bash
+   docker compose up --build -d
+   ```
+
+3. **Verify Service Status**:
+   ```bash
+   docker compose ps
+   ```
+
+4. **Access Platform Dashboards**:
+   * **Frontend UI Dashboard**: [http://localhost:3000](http://localhost:3000)
+   * **Backend OpenAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   * **Postiz Social Publisher**: [http://localhost:4007](http://localhost:4007)
+   * **Temporal Task Dashboard**: [http://localhost:8080](http://localhost:8080)
+
+5. **Stream Container Logs**:
+   * Stream combined logs for all services:
+     ```bash
+     docker compose logs -f
+     ```
+   * Stream logs for specific individual services:
+     ```bash
+     # View backend FastAPI logs only
+     docker compose logs -f backend
+
+     # View ComfyUI MCP server logs only
+     docker compose logs -f comfyui-mcp
+
+     # View Next.js frontend logs only
+     docker compose logs -f frontend
+
+     # View Postiz logs only
+     docker compose logs -f postiz
+     ```
+
+---
+
+### Alternative: Manual Component-by-Component Setup
+
+If you prefer running individual processes manually outside Docker Compose:
 
 ### Step 1: Core Datastore Setup (PostgreSQL)
 

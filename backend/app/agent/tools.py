@@ -6,9 +6,8 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables early from backend root directory
-_dotenv_path = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(dotenv_path=_dotenv_path, override=True)
+# Load environment variables early
+load_dotenv()
 
 # pyrefly: ignore [missing-import]
 from langchain_core.tools import tool

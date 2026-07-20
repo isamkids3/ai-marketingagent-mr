@@ -427,6 +427,10 @@ class TokenLimitingChatOpenAI(ChatOpenAI):
             logger.warning(f"[Token Limiter] Adjusting max_tokens from {requested_max} to {remaining_window} to fit context window.")
             kwargs["max_tokens"] = remaining_window
 
+        # Ensure max_completion_tokens is passed for vLLM OpenAI tool call generation
+        effective_max = kwargs.get("max_tokens") or self.max_tokens or 8192
+        kwargs["max_completion_tokens"] = effective_max
+
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         tools = kwargs.get("tools")
         pruned = self._prune_messages(messages, tools)
@@ -498,7 +502,8 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - Step 3: Trigger ComfyUI workflow (`text_image`, `image_reference_and_text_to_image`, or `image_image`).
    Mark tasks as 'in_progress' and 'completed' as you progress.
 
-2. Ephemeral Filesystem: You have access to a secure sandbox directory. To avoid token bloat, NEVER return raw visual briefs, competitor reports, or multi-platform caption drafts directly in the chat.
+2. Ephemeral Filesystem & Thread Workspace: You have access to a secure sandbox directory (`/sandbox/...`).
+   - **Thread Workspace Asset Retention**: The thread workspace contains all images, reference files, and media generated or uploaded during this chat session. All previously generated `/sandbox/...` image paths remain stored in the thread workspace and are available throughout the chat. You can freely reference, inspect (via `analyze_image`), or refine (via `image_image`, `image_reference_and_text_to_image`, `image_image_2ref`, `image_image_3ref`, `mask_image_image`) any image created earlier in the thread.
    - **For Markdown/Text**: Write them to disk using `write_file_to_sandbox` (e.g., `write_file_to_sandbox(filename="brief.md", content="...")`). Keep sandbox file contents concise and under 2000 words.
    - **For PDF Generation**: If the user requests a PDF, a formatted proposal, a professional campaign brief, copy sheet, or invoice, use the `generate_pdf_in_sandbox` tool. Specify the output filename (must end in `.pdf`) and the content in Markdown format.
    - **Embedding Images in PDFs**: You can and should embed generated images inside the PDF document. To do this, **you must generate the images first** (using `text_image` or other ComfyUI tools), retrieve the returned `/sandbox/...` image path, and then include it in the `content` of `generate_pdf_in_sandbox` using Markdown image syntax: `![Alt Text](/sandbox/...)`.
@@ -550,9 +555,9 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
    - Concise Query Guidance: Keep your custom `prompt` parameter short and specific (e.g., "Describe the key subject, layout, and verify there are no visual flaws."). The underlying QwenVL vision model output is strictly capped at 128 tokens for maximum execution speed.
 
 10. Ideogram Infographic & Layout Discipline: If generating an infographic, flowchart, or multi-item list/comparison (e.g., "benefits with icons and labels"), you MUST explicitly define **every single item, icon/graphic, shape, and text label** in the JSON `elements` list with its own individual bounding box. If the user request is high-level, you must still expand it into a detailed, fully deconstructed layout. You are strictly forbidden from writing a high-level description for a multi-item infographic but only defining a single element in the JSON, as this forces the renderer to hallucinate the remaining elements, resulting in gibberish text and graphics.
-   - **Token-Budget Optimization (BBox & Element Limits)**: To prevent JSON truncation and LLM output token limit errors, you MUST:
-     - **Limit Elements Count**: Limit the visual layout to a maximum of 6 elements per image (especially for infographics or split-screens).
-     - **Concise Descriptions**: Keep each element's description concise and strictly under 40 words. Do not use overly descriptive micro-prose. This forces compact JSON output and avoids truncation failures.
+   - **Token-Budget Optimization (Minified JSON & Concise Descriptions)**: To prevent JSON truncation and LLM output token limit errors, you MUST:
+     - **Always Emit Minified Single-Line JSON**: Output the JSON payload as a single-line minified string without multiline whitespace or markdown fences.
+     - **Concise Element Descriptions**: Keep each element's description concise and strictly under 15-20 words. Focus on core visual traits and avoid verbose prose. This guarantees high-density visual layouts within output token limits.
 
 10. Social Media Integration & Postiz Tools: If the user asks to view connected accounts, check posting requirements, publish, or schedule posts to social media platforms (such as X/Twitter, LinkedIn, Facebook, etc.):
     - First, list connected accounts using `integrationList` to see what channels are connected and their IDs.
@@ -570,8 +575,7 @@ You are an elite, real-time Marketing and Brand Strategy Agent. Your goal is to 
             - `attachments` (array of strings, REQUIRED): Array of public Postiz/R2 media URLs. If there are no images or attachments, you MUST explicitly provide an empty array: `"attachments": []`.
           * WARNING: Do NOT nest `content` or `attachments` inside a sub-object key like `"post"` or `"settings"`.
         - `settings` (array, REQUIRED): If you are not configuring platform-specific settings, you MUST pass this as an empty array: `"settings": []`. Do NOT pass an empty object inside the array (e.g., do NOT write `[{}]`).
-    - **Local File URLs for Postiz Ingestion**: Since Postiz runs inside a Docker container, it cannot resolve local filesystem paths on your host Mac (like `/sandbox/...` or `/Users/adamdali/...`). When passing an image or video URL to Postiz tools (like `uploadFromUrlTool` or the `attachments` array in `integrationSchedulePostTool`), **you MUST convert the local path into an HTTP URL** by prepending the relative sandbox path with `http://host.docker.internal:8000`.
-      *Example*: If the file path is `/sandbox/123/generated.png`, you MUST pass the URL: `http://host.docker.internal:8000/sandbox/123/generated.png`.
+    - **Sandbox Paths for Postiz Tools**: When passing an image or media file to Postiz tools (like `uploadFromUrlTool` or `integrationSchedulePostTool`), **always pass the `/sandbox/...` workspace path directly** (e.g. `/sandbox/123/generated.png`). The backend system automatically converts `/sandbox/...` paths into accessible URLs for Postiz to fetch and upload to your Cloudflare R2 bucket. Do NOT attempt to invent external HTTP URLs or regenerate existing assets unnecessarily.
 </strategic_operational_rules>
 
 <loop_prevention>
@@ -610,7 +614,7 @@ Error Handling:
 - If a document file path is missing or unreadable, report the error state directly and guide the user on the correct workspace file path structure.
 - If the search tool fails, explicitly report that real-time data retrieval failed. Do NOT fall back to training data. Instead, ask the user to clarify or retry.
 - If write_file_to_sandbox returns an error, report the failure with the exact error message and do not assume the file was saved.
-- JSON Truncation & Parsing Errors: If a JSON prompt fails to parse or throws a validation error during image generation tools execution, this is due to exceeding LLM output token limits (max_tokens). It is NOT a "path length limit" or "JSON length limit". You must immediately resolve it by simplifying the prompt, reducing the number of visual elements, and making descriptions more concise.
+- JSON Truncation & Parsing Errors: If a JSON prompt fails to parse or throws a validation error during image generation tools execution, this is due to exceeding LLM output token limits (max_tokens). You MUST resolve it by minifying the JSON payload to a single-line string and compressing element descriptions (e.g. 5-10 words per element). You are strictly forbidden from deleting, dropping, or stripping out core user requirements (such as headlines, tracks, venue details, dates, or sponsors). All user elements MUST be retained in the layout.
 - Sandbox File Truncation: If your sandbox file writing is truncated, it is because you have hit the output token limit. If you need the full content of a large file to be written, immediately write the file in sequential chunks using `write_file_to_sandbox` with `append=True` for subsequent parts.
 </hallucination_prevention>"""
 
@@ -763,23 +767,19 @@ def connect_to_mcp_server():
     """
     mcp_url = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:9000/mcp")
     
-    # Check if HTTP server is running (quick socket connect to avoid timeout)
     try:
-        import socket
+        import socket, urllib.parse
+        parsed = urllib.parse.urlparse(mcp_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 9000
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        # Extract host and port
-        port = 9000
-        if "127.0.0.1:" in mcp_url:
-            port = int(mcp_url.split("127.0.0.1:")[1].split("/")[0])
-        elif "localhost:" in mcp_url:
-            port = int(mcp_url.split("localhost:")[1].split("/")[0])
-        s.connect(("127.0.0.1", port))
+        s.settimeout(2.0)
+        s.connect((host, port))
         s.close()
         logger.info(f"Connecting to MCP server via Streamable HTTP at {mcp_url}")
         return streamablehttp_client(mcp_url, timeout=800, sse_read_timeout=1200)
-    except Exception:
-        logger.warning("Could not connect to MCP server via Streamable HTTP. Falling back to stdio.")
+    except Exception as err:
+        logger.warning(f"Could not connect to MCP server via Streamable HTTP at {mcp_url} ({err}). Falling back to stdio.")
 
     # Fallback to stdio command line
     server_script = os.getenv("MCP_SERVER_SCRIPT", "/Users/adamdali/Documents/AI_Agent_MR/comfyui-mcp-server/server.py")
@@ -852,18 +852,37 @@ async def get_global_mcp_sessions() -> Dict[str, ClientSession]:
 
             if not postiz_healthy:
                 postiz_url = os.getenv("POSTIZ_MCP_URL", "https://api.postiz.com/mcp").rstrip("/")
-                headers = {"Authorization": f"Bearer {postiz_api_key}"}
-                postiz_ctx = streamablehttp_client(postiz_url, headers=headers, timeout=800, sse_read_timeout=1200)
+                headers = {
+                    "Authorization": f"Bearer {postiz_api_key}",
+                    "Accept": "text/event-stream"
+                }
+                
+                # HTTP pre-check with short timeout to ensure Postiz NestJS upstream is ready
+                postiz_ready = False
                 try:
-                    p_conn = await _mcp_exit_stack.enter_async_context(postiz_ctx)
-                    p_read, p_write = p_conn[0], p_conn[1]
-                    postiz_sess = await _mcp_exit_stack.enter_async_context(ClientSession(p_read, p_write))
-                    await postiz_sess.initialize()
-                    _global_mcp_sessions["postiz"] = postiz_sess
-                    logger.info("Established persistent global Postiz MCP session.")
-                except Exception as e:
-                    logger.error(f"Failed to connect to Postiz MCP Server: {e}")
-                    _global_mcp_sessions.pop("postiz", None)
+                    import urllib.request
+                    req = urllib.request.Request(postiz_url, headers=headers, method="GET")
+                    with urllib.request.urlopen(req, timeout=3.0) as resp:
+                        postiz_ready = True
+                except Exception as http_err:
+                    # HTTP 400, 405, or 422 indicates the Postiz MCP endpoint is UP and responding to requests
+                    if hasattr(http_err, "code") and getattr(http_err, "code") in (200, 201, 202, 400, 405, 422):
+                        postiz_ready = True
+                    else:
+                        logger.warning(f"Postiz MCP HTTP endpoint not ready at {postiz_url}: {http_err}")
+
+                if postiz_ready:
+                    try:
+                        postiz_ctx = streamablehttp_client(postiz_url, headers=headers, timeout=800, sse_read_timeout=1200)
+                        p_conn = await _mcp_exit_stack.enter_async_context(postiz_ctx)
+                        p_read, p_write = p_conn[0], p_conn[1]
+                        postiz_sess = await _mcp_exit_stack.enter_async_context(ClientSession(p_read, p_write))
+                        await postiz_sess.initialize()
+                        _global_mcp_sessions["postiz"] = postiz_sess
+                        logger.info("Established persistent global Postiz MCP session.")
+                    except Exception as e:
+                        logger.warning(f"Could not connect to Postiz MCP Server at {postiz_url}: {e}")
+                        _global_mcp_sessions.pop("postiz", None)
         else:
             _global_mcp_sessions.pop("postiz", None)
 
@@ -897,8 +916,11 @@ def get_ngrok_url() -> Optional[str]:
 
 def rewrite_local_to_public_url(val: Any) -> Any:
     base_ws_prefix = f"{str(BASE_WORKSPACE).rstrip('/')}/"
+    shared_ws_root = os.getenv("SHARED_WORKSPACE_ROOT", "").rstrip("/")
+    shared_ws_prefix = f"{shared_ws_root}/" if shared_ws_root else ""
+
     if isinstance(val, str):
-        if val.startswith("/sandbox/") or "/sandbox/" in val or val.startswith(base_ws_prefix):
+        if val.startswith("/sandbox/") or "/sandbox/" in val or val.startswith(base_ws_prefix) or (shared_ws_prefix and val.startswith(shared_ws_prefix)) or "/gen-content/" in val:
             sandbox_relative_path = ""
             if val.startswith("/sandbox/"):
                 sandbox_relative_path = val.replace("/sandbox/", "", 1)
@@ -906,6 +928,10 @@ def rewrite_local_to_public_url(val: Any) -> Any:
                 sandbox_relative_path = val.split("/sandbox/", 1)[1]
             elif val.startswith(base_ws_prefix):
                 sandbox_relative_path = val.replace(base_ws_prefix, "", 1)
+            elif shared_ws_prefix and val.startswith(shared_ws_prefix):
+                sandbox_relative_path = val.replace(shared_ws_prefix, "", 1)
+            elif "/gen-content/" in val:
+                sandbox_relative_path = val.split("/gen-content/", 1)[1]
             
             if sandbox_relative_path:
                 ngrok_url = get_ngrok_url()
@@ -1473,8 +1499,24 @@ async def get_marketing_agent(sessions, session_id: str = "default", tone: Optio
             logger.info("Discovering tools from Postiz MCP Server...")
             postiz_session = sessions_dict["postiz"]
             try:
+                # Excluded: schedulePostTool (legacy, superseded by integrationSchedulePostTool),
+                # generateImageTool/generateVideoTool/generateVideoOptions/videoFunctionTool
+                # (Postiz's own generators, which would bypass our ComfyUI pipeline and sandbox/asset
+                # tracking if the agent ever called them), groupList (multi-customer/agency feature,
+                # unused here), triggerTool and ask_postiz (not part of the documented posting flow).
+                # Trims ~940 tokens/turn of tool-schema overhead from every LLM call.
+                postiz_excluded_tools = (
+                    "schedulePostTool",
+                    "generateImageTool",
+                    "generateVideoTool",
+                    "generateVideoOptions",
+                    "videoFunctionTool",
+                    "groupList",
+                    "triggerTool",
+                    "ask_postiz",
+                )
                 postiz_tools_list = await postiz_session.list_tools()
-                lc_postiz_tools = [mcp_tool_to_langchain(t, postiz_session) for t in postiz_tools_list.tools if t.name not in ("schedulePostTool",)]
+                lc_postiz_tools = [mcp_tool_to_langchain(t, postiz_session) for t in postiz_tools_list.tools if t.name not in postiz_excluded_tools]
                 lc_mcp_tools.extend(lc_postiz_tools)
                 logger.info(f"Registered {len(lc_postiz_tools)} tools from Postiz MCP server dynamically.")
             except Exception as e:

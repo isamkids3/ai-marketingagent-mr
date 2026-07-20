@@ -1,0 +1,269 @@
+networks:
+  app-network:
+    driver: bridge
+
+services:
+  # === 1. Next.js Frontend ===
+  frontend:
+    build:
+      context: ./front-end
+      dockerfile: Dockerfile
+    container_name: nextjs-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - app-network
+    depends_on:
+      - backend
+
+  # === 2. FastAPI Backend ===
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastapi-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - SECRET_KEY=${BACKEND_SECRET_KEY}
+      - POSTGRES_USER=${BACKEND_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${BACKEND_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${BACKEND_POSTGRES_DB}
+      - POSTGRES_PORT=${BACKEND_POSTGRES_PORT}
+      - DATABASE_URL=postgresql+asyncpg://${BACKEND_POSTGRES_USER}:${BACKEND_POSTGRES_PASSWORD}@millenium-postgres:5432/${BACKEND_POSTGRES_DB}
+      - MCP_SERVER_URL=http://comfyui-mcp:9000/mcp
+      - POSTIZ_MCP_URL=http://postiz:5000/api/mcp
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+      - SHARED_WORKSPACE_ROOT=/app/gen-content
+    volumes:
+      - ./backend/shares:/app/shares
+      - ${SHARED_WORKSPACE_ROOT:-./gen-content}:/app/gen-content
+    networks:
+      - app-network
+    depends_on:
+      millenium-postgres:
+        condition: service_healthy
+      comfyui-mcp:
+        condition: service_started
+
+  # === 3. FastAPI Database (Existing Chat History & Users) ===
+  millenium-postgres:
+    image: postgres:16-alpine
+    container_name: millenium-postgres-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${BACKEND_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${BACKEND_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${BACKEND_POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - backend_postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BACKEND_POSTGRES_USER} -d ${BACKEND_POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # === 4. ComfyUI MCP Server (Least-Privilege Scoped Env) ===
+  comfyui-mcp:
+    build:
+      context: ./comfyui-mcp-server
+      dockerfile: Dockerfile
+    container_name: comfyui-mcp
+    restart: always
+    ports:
+      - "9000:9000"
+    environment:
+      - COMFYUI_URL=${COMFYUI_URL}
+      - COMFY_MCP_WORKFLOW_DIR=${COMFY_MCP_WORKFLOW_DIR}
+      - COMFY_MCP_ASSET_TTL_HOURS=${COMFY_MCP_ASSET_TTL_HOURS}
+      - SHARED_WORKSPACE_ROOT=/app/gen-content
+    volumes:
+      - ${SHARED_WORKSPACE_ROOT:-./gen-content}:/app/gen-content
+    networks:
+      - app-network
+
+  # === 5. Postiz & Temporal Stack ===
+  postiz:
+    image: ghcr.io/gitroomhq/postiz-app:latest
+    container_name: postiz
+    restart: always
+    env_file:
+      - .env
+    environment:
+      MAIN_URL: 'http://localhost:4007'
+      FRONTEND_URL: 'http://localhost:4007'
+      NEXT_PUBLIC_BACKEND_URL: 'http://localhost:4007/api'
+      REDIS_URL: 'redis://postiz-redis:6379'
+      TEMPORAL_ADDRESS: 'temporal:7233'
+      JWT_SECRET: ${POSTIZ_JWT_SECRET}
+      DATABASE_URL: 'postgresql://${POSTIZ_POSTGRES_USER}:${POSTIZ_POSTGRES_PASSWORD}@postiz-postgres:5432/${POSTIZ_POSTGRES_DB}'
+    volumes:
+      - postiz-config:/config/
+      - postiz-uploads:/uploads/
+    ports:
+      - "4007:5000"
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "node", "-e", "const r=require('http').get('http://localhost:5000/',res=>process.exit(res.statusCode<500?0:1));r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      postiz-postgres:
+        condition: service_healthy
+      postiz-redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
+  postiz-postgres:
+    image: postgres:17-alpine
+    container_name: postiz-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTIZ_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTIZ_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTIZ_POSTGRES_DB}
+    volumes:
+      - postiz-postgres-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTIZ_POSTGRES_USER} -d ${POSTIZ_POSTGRES_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postiz-redis:
+    image: redis:7.2
+    container_name: postiz-redis
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep -q PONG" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postiz-redis-data:/data
+    networks:
+      - app-network
+
+  temporal-elasticsearch:
+    container_name: temporal-elasticsearch
+    image: elasticsearch:7.17.27
+    restart: always
+    environment:
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      - xpack.security.enabled=false
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -fsS \"http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s\" || exit 1" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - temporal-elasticsearch-data:/usr/share/elasticsearch/data
+
+  temporal-postgresql:
+    container_name: temporal-postgresql
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U temporal" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+
+  temporal:
+    container_name: temporal
+    restart: always
+    ports:
+      - '7233:7233'
+    image: temporalio/auto-setup:1.28.1
+    depends_on:
+      temporal-postgresql:
+        condition: service_healthy
+      temporal-elasticsearch:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-postgresql
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - ENABLE_ES=true
+      - ES_SEEDS=temporal-elasticsearch
+      - ES_VERSION=v7
+      - TEMPORAL_NAMESPACE=default
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ./postiz-docker-compose/dynamicconfig:/etc/temporal/config/dynamicconfig
+
+  temporal-ui:
+    container_name: temporal-ui
+    image: temporalio/ui:2.34.0
+    restart: always
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://127.0.0.1:3000
+    networks:
+      - app-network
+    ports:
+      - '8080:8080'
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/healthz" ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+volumes:
+  backend_postgres_data:
+    external: true
+    name: backend_postgres_data
+  postiz-postgres-data:
+    external: true
+    name: postiz-docker-compose_postgres-volume
+  postiz-config:
+    external: true
+    name: postiz-docker-compose_postiz-config
+  postiz-uploads:
+    external: true
+    name: postiz-docker-compose_postiz-uploads
+  postiz-redis-data:
+    external: true
+    name: postiz-docker-compose_postiz-redis-data
+  temporal-postgres-data:
+    external: true
+    name: postiz-docker-compose_temporal-postgres-data
+  temporal-elasticsearch-data:
+    external: true
+    name: postiz-docker-compose_temporal-elasticsearch-data
